@@ -195,7 +195,8 @@ async def apply_punch(attacker_id, attacker_name, victim_id, chat_id, is_auto=Fa
             return await bot.send_message(chat_id, f"⏳ {att['username']}, кулдаун удара ещё {int(cd_left//60)} мин {int(cd_left%60)} сек.")
 
     # 1. Щит
-    if vic["shield"] == 1:        await loop.run_in_executor(None, update_user, victim_id, chat_id, shield=0)
+    if vic["shield"] == 1:        
+        await loop.run_in_executor(None, update_user, victim_id, chat_id, shield=0)
         return await bot.send_message(chat_id, f"🛡️ Щит {vic['username']} поглотил удар и разбился!")
 
     # 2. Откуп
@@ -244,7 +245,8 @@ async def apply_punch(attacker_id, attacker_name, victim_id, chat_id, is_auto=Fa
         if valid_stats:
             chosen = random.choice(valid_stats)
             if chosen in POSITIVE_STATS:
-                new_val = vic[chosen] - 1                await loop.run_in_executor(None, update_user, victim_id, chat_id, **{chosen: new_val})
+                new_val = vic[chosen] - 1                
+                await loop.run_in_executor(None, update_user, victim_id, chat_id, **{chosen: new_val})
                 result_msg += f"\n📉 Удар ослабил навык {STAT_NAMES[chosen]}: {vic[chosen]}% → {new_val}%"
             else:
                 new_val = vic[chosen] + 1
@@ -342,7 +344,8 @@ async def cmd_punch(message: types.Message):
     if not message.reply_to_message:
         return await message.answer("⚠️ Ответьте на сообщение игрока, чтобы ударить его!")
     
-    user = await get_user_ctx(message)    if user["hp"] <= 0:
+    user = await get_user_ctx(message)    
+    if user["hp"] <= 0:
         return await message.answer("💀 Вы без сознания (0 HP)! Ждите регенерации или купите лечение в /shop.")
     if message.reply_to_message.from_user.id == bot.id:
         return await message.answer("🤖 Ботов бить нельзя!")
@@ -391,7 +394,8 @@ async def cmd_shop(message: types.Message):
     await message.answer("🏪 Добро пожаловать в магазин! (Доступен даже при 0 HP)", reply_markup=kb)
 
 @dp.callback_query(lambda c: c.data.startswith("shop:"))
-async def shop_handler(call: types.CallbackQuery):    await shop_callback(call)
+async def shop_handler(call: types.CallbackQuery):    
+    await shop_callback(call)
 
 @dp.message(Command("casino"))
 async def cmd_casino(message: types.Message):
