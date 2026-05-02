@@ -392,7 +392,8 @@ async def cmd_stats(m: types.Message):
     await m.answer(txt)
 
 async def main():
-    init_db()    logging.info(f"✅ БД: {DB_PATH}")
+    init_db()    
+    logging.info(f"✅ БД: {DB_PATH}")
     await bot.set_my_commands([
         types.BotCommand("help","Помощь + кнопки"), types.BotCommand("stats","Мои статы"),
         types.BotCommand("punch","Ударить (ответом)"), types.BotCommand("job","Работа +1💰"),
