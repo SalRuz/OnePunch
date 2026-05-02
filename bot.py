@@ -145,7 +145,8 @@ def ensure_user(user_id, chat_id, username):
 def update_user(user_id, chat_id, **kwargs):
     """Обновляет данные пользователя - ВСЕГДА в отдельном потоке"""
     conn = _get_db_connection()
-    try:        cursor = conn.cursor()
+    try:        
+        cursor = conn.cursor()
         set_clause = ", ".join(f"{k}=?" for k in kwargs)
         values = list(kwargs.values()) + [user_id, chat_id]
         cursor.execute(f"UPDATE users SET {set_clause} WHERE user_id=? AND chat_id=?", values)
