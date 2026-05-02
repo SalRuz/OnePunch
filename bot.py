@@ -395,10 +395,14 @@ async def main():
     init_db()    
     logging.info(f"✅ БД: {DB_PATH}")
     await bot.set_my_commands([
-        types.BotCommand("help","Помощь + кнопки"), types.BotCommand("stats","Мои статы"),
-        types.BotCommand("punch","Ударить (ответом)"), types.BotCommand("job","Работа +1💰"),
-        types.BotCommand("sport","Прокачка"), types.BotCommand("casino","Казино: /casino 100"),
-        types.BotCommand("casinotop","Топ чата"), types.BotCommand("shop","Магазин")
+        types.BotCommand("help","Помощь + кнопки"), 
+        types.BotCommand("stats","Мои статы"),
+        types.BotCommand("punch","Ударить (ответом)"), 
+        types.BotCommand("job","Работа +1💰"),
+        types.BotCommand("sport","Прокачка"), 
+        types.BotCommand("casino","Казино: /casino 100"),
+        types.BotCommand("casinotop","Топ чата"), 
+        types.BotCommand("shop","Магазин")
     ])
     await dp.start_polling(bot)
 
