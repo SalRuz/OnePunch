@@ -194,7 +194,8 @@ async def do_punch(aid, aname, vid, cid, auto=False):
             return await bot.send_message(cid, f"🛡️ Щит {vic['username']} поглотил удар!")
 
         # Откуп
-        if vic["debuff_payoff"] > 0 and vic["money"] > 0 and random.randint(1,100) <= vic["debuff_payoff"]:            amt = vic["money"] // 2
+        if vic["debuff_payoff"] > 0 and vic["money"] > 0 and random.randint(1,100) <= vic["debuff_payoff"]:            
+            amt = vic["money"] // 2
             await db_task(_upd_user, vid, cid, money=vic["money"]-amt)
             await db_task(_upd_user, aid, cid, money=att["money"]+amt)
             return await bot.send_message(cid, f"💸 Откуп! {vic['username']} отдал {amt}💰")
@@ -243,7 +244,8 @@ async def do_punch(aid, aname, vid, cid, auto=False):
             c = conn.cursor()
             c.execute("SELECT username,debuff_fear FROM users WHERE chat_id=? AND debuff_fear>0",(cid,))
             for nm,fl in c.fetchall():
-                if random.randint(1,100)<=fl:                    await bot.send_message(cid, random.choice(POOP_TEXTS).format(nick=nm))
+                if random.randint(1,100)<=fl:                    
+                    await bot.send_message(cid, random.choice(POOP_TEXTS).format(nick=nm))
         finally:
             conn.close()
 
