@@ -96,7 +96,8 @@ POOP_TEXTS = [
 ]
 
 POSITIVE_STATS = ["stat_regen", "stat_counter", "stat_block", "stat_jiu"]
-ALL_STATS = POSITIVE_STATS + ["debuff_weak", "debuff_fear", "debuff_payoff"]STAT_NAMES = {
+ALL_STATS = POSITIVE_STATS + ["debuff_weak", "debuff_fear", "debuff_payoff"]
+STAT_NAMES = {
     "stat_regen": "Регенерация", "stat_counter": "Отпор",
     "stat_block": "Блок", "stat_jiu": "Джиу-джитсу",
     "debuff_weak": "Слабость", "debuff_fear": "Страх", "debuff_payoff": "Откуп"
