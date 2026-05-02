@@ -392,8 +392,7 @@ async def cmd_casino(m: types.Message):
         mult = 0 if r<0.40 else 1 if r<0.70 else 2 if r<0.90 else 3 if r<0.98 else 5
         win = bet * mult
         nm = u["money"] - bet + win
-        await db_task(_upd_user, u["user_id"], m.chat.id, money=nm, casino_won=u["casino_won"]+win)
-                res = {0:"💀 Проигрыш",1:"🔄 Возврат",2:"🎉 x2",3:"🔥 x3",5:"💎 x5 ДЖЕКПОТ"}[mult]
+        await db_task(_upd_user, u["user_id"], m.chat.id, money=nm, casino_won=u["casino_won"]+win)res = {0:"💀 Проигрыш",1:"🔄 Возврат",2:"🎉 x2",3:"🔥 x3",5:"💎 x5 ДЖЕКПОТ"}[mult]
         await m.answer(f"🎰 {u['username']}: {res}\n💰 Выпало {mult}x | +{win} | Баланс: {nm}")
     except Exception as e:
         logger.error(f"❌ /casino error: {e}", exc_info=True)
