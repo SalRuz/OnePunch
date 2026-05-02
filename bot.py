@@ -442,7 +442,8 @@ async def cmd_stats(message: types.Message):
     )
     await message.answer(text)
 
-async def main():    init_db()
+async def main():    
+    init_db()
     print(f"🗄️ База данных готова: {DB_PATH}")
     
     # 📋 Настройка нижнего меню
