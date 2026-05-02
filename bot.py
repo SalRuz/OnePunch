@@ -146,7 +146,8 @@ def _ensure_user(user_id, chat_id, username):
     finally:
         conn.close()
 
-def _update_user(user_id, chat_id, **kwargs):    conn = _get_db()
+def _update_user(user_id, chat_id, **kwargs):    
+    conn = _get_db()
     try:
         c = conn.cursor()
         set_clause = ", ".join(f"{k}=?" for k in kwargs)
