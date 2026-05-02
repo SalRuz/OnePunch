@@ -294,7 +294,8 @@ async def errors_handler(update: types.Update, exception: Exception):
     return True
 
 # 📝 Handlers
-@dp.message(Command("help"))async def cmd_help(m: types.Message):
+@dp.message(Command("help"))
+async def cmd_help(m: types.Message):
     try:
         await db_task(_get_user, m.from_user.id, m.chat.id, clean_nick(m.from_user.full_name))
         kb = InlineKeyboardBuilder()
