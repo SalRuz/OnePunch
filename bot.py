@@ -392,7 +392,8 @@ async def cmd_casino(message: types.Message):
     rand = random.random()
     if rand < 0.40: mult = 0
     elif rand < 0.70: mult = 1
-    elif rand < 0.90: mult = 2    elif rand < 0.98: mult = 3
+    elif rand < 0.90: mult = 2    
+    elif rand < 0.98: mult = 3
     else: mult = 5
 
     win = bet * mult
