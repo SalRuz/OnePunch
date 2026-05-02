@@ -392,19 +392,21 @@ async def cmd_stats(m: types.Message):
     await m.answer(txt)
 
 async def main():
-    init_db()    
+    init_db()
     logging.info(f"✅ БД: {DB_PATH}")
+    
+    # ✅ ИСПРАВЛЕНО: используем именованные аргументы для BotCommand
     await bot.set_my_commands([
-        types.BotCommand("help","Помощь + кнопки"), 
-        types.BotCommand("stats","Мои статы"),
-        types.BotCommand("punch","Ударить (ответом)"), 
-        types.BotCommand("job","Работа +1💰"),
-        types.BotCommand("sport","Прокачка"), 
-        types.BotCommand("casino","Казино: /casino 100"),
-        types.BotCommand("casinotop","Топ чата"), 
-        types.BotCommand("shop","Магазин")
+        types.BotCommand(command="help", description="Помощь + кнопки"),
+        types.BotCommand(command="stats", description="Мои статы"),
+        types.BotCommand(command="punch", description="Ударить (ответом)"),
+        types.BotCommand(command="job", description="Работа +1💰"),
+        types.BotCommand(command="sport", description="Прокачка"),
+        types.BotCommand(command="casino", description="Казино: /casino 100"),
+        types.BotCommand(command="casinotop", description="Топ чата"),
+        types.BotCommand(command="shop", description="Магазин")
     ])
+    
     await dp.start_polling(bot)
-
 if __name__ == "__main__":
     asyncio.run(main())
