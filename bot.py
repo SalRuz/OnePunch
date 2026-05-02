@@ -444,7 +444,8 @@ async def cmd_casinotop(message: types.Message):
         return await message.answer("📊 Пока нет данных по этому миру.")
 
     text = f"🏆 Топ лудоманов (мир: {message.chat.id}):\n"
-    for i, (nick, won) in enumerate(rows, 1):        medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
+    for i, (nick, won) in enumerate(rows, 1):        
+        medal = "🥇" if i==1 else "🥈" if i==2 else "🥉" if i==3 else f"{i}."
         text += f"{medal} {nick}: {won}💰\n"
     await message.answer(text)
 
