@@ -10,7 +10,7 @@ import aiosqlite
 
 # 🔑 Вставь сюда токен от @BotFather
 BOT_TOKEN = "8183582932:AAEIas0VlMxWSDvOLap_y6cTsZ9yqicmhYc"
-DB_NAME = "punch_rpg.db"
+DB_NAME = "data.db"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
