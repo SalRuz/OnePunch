@@ -342,7 +342,8 @@ async def cmd_job(message: types.Message):
     await asyncio.to_thread(update_user, user["user_id"], message.chat.id, money=user["money"]+1, last_job=now)
     await message.answer(f"💼 {user['username']} поработал и заработал 1 монету. Баланс: {user['money']+1}")
 
-@dp.message(Command("sport"))async def cmd_sport(message: types.Message):
+@dp.message(Command("sport"))
+async def cmd_sport(message: types.Message):
     user = await get_user_ctx(message)
     if user["hp"] <= 0:
         return await message.answer("💀 Вы без сознания! Тренировки запрещены.")
