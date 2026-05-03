@@ -147,9 +147,107 @@ COOLDOWNS = {
     "freed": 1800,
 }
 
+# ─── Состояния сапёра /911 ─────────────────────────────────────────────────
+# sapper_sessions[uid] = {
+#   "chat_id": int,
+#   "round": int (1-3),
+#   "board": list[list[int]],   # 0=пусто,1=мина,-1=открыто
+#   "revealed": list[list[bool]],
+#   "flagged": list[list[bool]],
+#   "rows": int, "cols": int, "mines": int,
+#   "msg_id": int,
+#   "slave_rec_id": int,
+#   "client_id": int,
+#   "client_name": str,
+# }
+sapper_sessions: dict = {}
+
+SAPPER_ROWS = 5
+SAPPER_COLS = 8
+SAPPER_MINES = [5, 7, 9]  # мины для раунда 1, 2, 3
+
 DEFAULT_REGEN_TIME = 3600
 
 # ─── Утилиты ──────────────────────────────────────────────────────────────────
+
+def _make_board(rows: int, cols: int, mines: int) -> list:
+    board = [[0] * cols for _ in range(rows)]
+    positions = random.sample(range(rows * cols), mines)
+    for pos in positions:
+        board[pos // cols][pos % cols] = 1
+    return board
+
+def _count_around(board, r, c):
+    rows, cols = len(board), len(board[0])
+    cnt = 0
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and board[nr][nc] == 1:
+                cnt += 1
+    return cnt
+
+def _sapper_keyboard(session: dict) -> InlineKeyboardMarkup:
+    rows = session["rows"]
+    cols = session["cols"]
+    board = session["board"]
+    revealed = session["revealed"]
+    buttons = []
+    for r in range(rows):
+        row_btns = []
+        for c in range(cols):
+            if revealed[r][c]:
+                n = _count_around(board, r, c)
+                nums = ["·", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
+                label = nums[n] if n < len(nums) else str(n)
+                row_btns.append(
+                    InlineKeyboardButton(text=label, callback_data=f"sap:hit:{r}:{c}")
+                )
+            else:
+                row_btns.append(
+                    InlineKeyboardButton(text="🟦", callback_data=f"sap:open:{r}:{c}")
+                )
+        buttons.append(row_btns)
+    # Счёт открытых безопасных клеток
+    safe_total = rows * cols - session["mines"]
+    opened = sum(revealed[r][c] for r in range(rows) for c in range(cols))
+    buttons.append([
+        InlineKeyboardButton(
+            text=f"🔍 Раунд {session['round']}/3 | Открыто: {opened}/{safe_total} | Мин: {session['mines']}",
+            callback_data="sap:info"
+        )
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def _all_safe_revealed(session: dict) -> bool:
+    rows, cols = session["rows"], session["cols"]
+    board, revealed = session["board"], session["revealed"]
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == 0 and not revealed[r][c]:
+                return False
+    return True
+
+def _reveal_cascade(board, revealed, r, c, rows, cols):
+    """Открывает клетку и каскадно открывает пустые соседние."""
+    stack = [(r, c)]
+    while stack:
+        cr, cc = stack.pop()
+        if cr < 0 or cr >= rows or cc < 0 or cc >= cols:
+            continue
+        if revealed[cr][cc]:
+            continue
+        if board[cr][cc] == 1:
+            continue
+        revealed[cr][cc] = True
+        if _count_around(board, cr, cc) == 0:
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    stack.append((cr + dr, cc + dc))
 
 def calc_regen_time(stat_regen: int) -> float:
     return max(60, DEFAULT_REGEN_TIME * (1 - stat_regen / 100))
@@ -189,6 +287,8 @@ COL_DEFAULTS = {
     "debuff_weak": 0, "debuff_fear": 0, "debuff_payoff": 0,
     "casino_won": 0, "glove_durability": 0, "handcuffs": 0,
     "tranq_until": 0.0, "adren_until": 0.0, "tranq_stock": 0,
+    "jailed_until": 0.0,
+    "last_911": 0.0,
 }
 COL_NAMES = list(COL_DEFAULTS.keys())
 
@@ -258,6 +358,8 @@ def init_db():
             "tranq_until": "REAL DEFAULT 0",
             "adren_until": "REAL DEFAULT 0",
             "tranq_stock": "INTEGER DEFAULT 0",
+            "jailed_until": "REAL DEFAULT 0",
+            "last_911": "REAL DEFAULT 0",
         }
         for col, typedef in migrations_users.items():
             if col not in existing:
@@ -444,13 +546,13 @@ def _sell_kidnapped(record_id: int, slave_owner_id: int, slave_owner_name: str):
         conn.close()
 
 def _escape_from_slavery(record_id: int, new_kidnapper_id: int, new_kidnapper_name: str):
-    """Сбежать из рабства обратно в подвал (к тому кто продал или к старому похитителю)."""
+    """Сбежать из рабства обратно в подвал к клиенту (slave_owner)."""
     conn = _db()
     try:
         c = conn.cursor()
         now = time.time()
-        # sold=0 снова — теперь в подвале у kidnapper_id (тот, кто изначально держал)
-        # Если был продан, то kidnapper_id — тот кто продал. Переводим к new_kidnapper
+        # sold=0 — теперь в подвале у того кто был slave_owner (клиент)
+        # kidnapper_id становится клиентом, прибыль для продавца останавливается
         c.execute(
             "UPDATE kidnapped SET sold=0, handcuffed=0, slave_owner_id=0, slave_owner_name='', "
             "kidnapper_id=?, kidnapper_name=?, kidnapped_at=? WHERE id=?",
@@ -528,6 +630,11 @@ def _transfer_hostages(old_kidnapper_id: int, new_kidnapper_id: int, new_kidnapp
 # ─── Проверки ──────────────────────────────────────────────────────────────────
 
 def _is_blocked(uid: int, cid: int) -> tuple:
+    u = _get_user(uid, cid, "")
+    now = time.time()
+    if u.get("jailed_until", 0) > now:
+        return True, f"🚔 Вы за решёткой! Осталось: {format_time(u['jailed_until'] - now)}"
+
     rec = _get_kidnapped_by_victim(uid, cid)
     if rec:
         if rec["sold"] == 1:
@@ -912,6 +1019,8 @@ async def cmd_help(m: types.Message):
             "   1️⃣ /freed — снять наручники (30%, кд 30м)\n"
             "   2️⃣ /freed — сбежать из рабства в подвал (30%, кд 30м)\n"
             "   3️⃣ /freed — сбежать из подвала (30%, кд 30м)\n\n"
+            "🚔 /911 — вызов копов (только в рабстве, кд 5ч)\n"
+            "   Реши 3 сапёра → освобождение + клиент в тюрьму 3ч\n\n"
             "💉 Спецпредметы:\n"
             "   /trank (ответ) — транквилизатор: паралич 3ч + стоп регена (4🖤)\n"
             "   /adren — статус адреналина (купить 3🖤): КД удара 15м на 3ч\n\n"
@@ -1355,6 +1464,11 @@ async def cmd_freed(m: types.Message):
         u = await db_task(_get_user, uid, cid, name)
         display = u.get("username") or name
 
+        # Проверка тюрьмы
+        now_check = time.time()
+        if u.get("jailed_until", 0) > now_check:
+            return await m.answer(f"🚔 Вы за решёткой! Осталось: {format_time(u['jailed_until'] - now_check)}")
+
         rec = await db_task(_get_kidnapped_by_victim, uid, cid)
         if not rec:
             return await m.answer("🤷 Вы не в подвале и не в рабстве!")
@@ -1386,15 +1500,15 @@ async def cmd_freed(m: types.Message):
                         f"Попробуй через 30м."
                     )
 
-            # Шаг 2: сбежать из рабства обратно в подвал (к тому кто продал — kidnapper_id)
+            # Шаг 2: сбежать из рабства обратно в подвал к клиенту (slave_owner)
             if random.randint(1, 100) <= 30:
-                # Сбегаем из рабства, возвращаемся в подвал к kidnapper_id
-                old_kidnapper_id = rec["kidnapper_id"]
-                old_kidnapper_name = rec["kidnapper_name"]
-                await db_task(_escape_from_slavery, rec["id"], old_kidnapper_id, old_kidnapper_name)
+                # Клиент становится новым похитителем в подвале
+                client_id = rec.get("slave_owner_id", 0)
+                client_name = rec.get("slave_owner_name", "?")
+                await db_task(_escape_from_slavery, rec["id"], client_id, client_name)
                 return await m.answer(
-                    f"🏃 {display} сбежал из рабства {owner_name}!\n"
-                    f"Теперь {display} снова в подвале у {old_kidnapper_name}.\n"
+                    f"🏃 {display} сбежал из рабства!\n"
+                    f"Теперь {display} в подвале у {client_name}.\n"
                     f"Используй /freed ещё раз чтобы сбежать окончательно (кд 30м)."
                 )
             else:
@@ -1680,6 +1794,208 @@ async def cmd_adren(m: types.Message):
         logger.error(f"/adren error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка")
 
+# ─── /911 ─────────────────────────────────────────────────────────────────────
+
+@dp.message(Command("911"))
+async def cmd_911(m: types.Message):
+    try:
+        uid = m.from_user.id
+        cid = m.chat.id
+        name = clean_nick(m.from_user.full_name)
+
+        await db_task(_get_user, uid, cid, name)
+        await db_task(_upd_username, uid, cid, name)
+        u = await db_task(_get_user, uid, cid, name)
+        display = u.get("username") or name
+
+        rec = await db_task(_get_kidnapped_by_victim, uid, cid)
+        if not rec or rec.get("sold") != 1:
+            return await m.answer("🚔 /911 можно вызвать только находясь в рабстве!")
+
+        now = time.time()
+        last = u.get("last_911", 0)
+        cd = 18000 - (now - last)
+        if cd > 0:
+            return await m.answer(f"🚔 /911 доступен через {format_time(cd)}")
+
+        # Начинаем сессию сапёра
+        board = _make_board(SAPPER_ROWS, SAPPER_COLS, SAPPER_MINES[0])
+        revealed = [[False] * SAPPER_COLS for _ in range(SAPPER_ROWS)]
+        session = {
+            "chat_id": cid,
+            "round": 1,
+            "board": board,
+            "revealed": revealed,
+            "rows": SAPPER_ROWS,
+            "cols": SAPPER_COLS,
+            "mines": SAPPER_MINES[0],
+            "msg_id": None,
+            "slave_rec_id": rec["id"],
+            "client_id": rec.get("slave_owner_id", 0),
+            "client_name": rec.get("slave_owner_name", "?"),
+            "seller_id": rec.get("kidnapper_id", 0),
+            "seller_name": rec.get("kidnapper_name", "?"),
+        }
+        sapper_sessions[uid] = session
+
+        await async_upd(uid, cid, {"last_911": now})
+
+        kb = _sapper_keyboard(session)
+        sent = await m.answer(
+            f"🚔 {display} вызывает копов!\n\n"
+            f"Реши 3 сапёра подряд чтобы освободиться и посадить клиента!\n"
+            f"❌ Если проиграешь хоть один — вызов провалится.\n\n"
+            f"📋 Раунд 1/3 | Мин: {SAPPER_MINES[0]}\n"
+            f"Открой все безопасные клетки!",
+            reply_markup=kb
+        )
+        sapper_sessions[uid]["msg_id"] = sent.message_id
+    except Exception as e:
+        logger.error(f"/911 error: {e}", exc_info=True)
+        await m.answer("⚠️ Ошибка")
+
+
+@dp.callback_query(lambda c: c.data.startswith("sap:"))
+async def sapper_cb(call: types.CallbackQuery):
+    try:
+        uid = call.from_user.id
+        cid = call.message.chat.id
+
+        if uid not in sapper_sessions:
+            return await call.answer("❌ Нет активной игры!", show_alert=True)
+
+        session = sapper_sessions[uid]
+
+        # Проверяем что это тот же чат и то же сообщение
+        if session["chat_id"] != cid:
+            return await call.answer("❌ Не ваша игра!", show_alert=True)
+
+        parts = call.data.split(":")
+        action = parts[1]
+
+        if action == "info":
+            return await call.answer("ℹ️ Открывай синие клетки — избегай мин!", show_alert=False)
+
+        if action == "hit":
+            return await call.answer("💥 Тут уже открыто!", show_alert=False)
+
+        if action != "open":
+            return await call.answer()
+
+        r, c = int(parts[2]), int(parts[3])
+        board = session["board"]
+        revealed = session["revealed"]
+
+        if revealed[r][c]:
+            return await call.answer("Уже открыто!", show_alert=False)
+
+        # Мина!
+        if board[r][c] == 1:
+            # Показываем все мины
+            for rr in range(session["rows"]):
+                for cc in range(session["cols"]):
+                    if board[rr][cc] == 1:
+                        revealed[rr][cc] = True
+
+            del sapper_sessions[uid]
+            await call.answer("💥 МИНА! Вызов провалился!", show_alert=True)
+            try:
+                await call.message.edit_text(
+                    f"💥 {call.from_user.full_name} подорвался на мине!\n"
+                    f"Копы не приедут. Раунд {session['round']}/3 провален.\n"
+                    f"Попробуй снова через 5 часов (/911)",
+                    reply_markup=None
+                )
+            except Exception:
+                pass
+            return
+
+        # Открываем клетку (и каскадно пустые)
+        _reveal_cascade(board, revealed, r, c, session["rows"], session["cols"])
+
+        # Проверяем победу в раунде
+        if _all_safe_revealed(session):
+            round_num = session["round"]
+
+            if round_num < 3:
+                # Следующий раунд
+                next_round = round_num + 1
+                new_board = _make_board(SAPPER_ROWS, SAPPER_COLS, SAPPER_MINES[next_round - 1])
+                new_revealed = [[False] * SAPPER_COLS for _ in range(SAPPER_ROWS)]
+                session["round"] = next_round
+                session["board"] = new_board
+                session["revealed"] = new_revealed
+                session["mines"] = SAPPER_MINES[next_round - 1]
+
+                await call.answer(f"✅ Раунд {round_num} пройден! Следующий раунд!", show_alert=True)
+                kb = _sapper_keyboard(session)
+                try:
+                    await call.message.edit_text(
+                        f"🚔 Раунд {next_round}/3 | Мин: {SAPPER_MINES[next_round - 1]}\n"
+                        f"Продолжай! Открой все безопасные клетки!",
+                        reply_markup=kb
+                    )
+                except Exception:
+                    pass
+            else:
+                # Победа! Все 3 раунда пройдены
+                del sapper_sessions[uid]
+
+                name = clean_nick(call.from_user.full_name)
+                u = await db_task(_get_user, uid, cid, name)
+                display = u.get("username") or name
+
+                client_id = session["client_id"]
+                client_name = session["client_name"]
+                slave_rec_id = session["slave_rec_id"]
+
+                # Освобождаем игрока полностью
+                await db_task(_free_kidnapped, slave_rec_id)
+
+                # Сажаем клиента в тюрьму на 3 часа
+                now = time.time()
+                jail_end = now + 10800
+                if client_id and client_id != 0:
+                    await async_upd(client_id, cid, {"jailed_until": jail_end})
+
+                await call.answer("🎉 ВСЕ РАУНДЫ ПРОЙДЕНЫ! Копы едут!", show_alert=True)
+                try:
+                    await call.message.edit_text(
+                        f"🚔 {display} решил все 3 сапёра и вызвал копов!\n\n"
+                        f"✅ {display} полностью освобождён!\n"
+                        f"🚨 {client_name} арестован на 3 часа!\n"
+                        f"За это время {client_name} не может совершать никаких действий.",
+                        reply_markup=None
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    await bot.send_message(
+                        cid,
+                        f"🚔 АРЕСТ!\n"
+                        f"{display} вызвал копов и сбежал из рабства!\n"
+                        f"🚨 {client_name} посажен за решётку на 3 часа!"
+                    )
+                except Exception:
+                    pass
+        else:
+            # Просто обновляем поле
+            kb = _sapper_keyboard(session)
+            safe_total = session["rows"] * session["cols"] - session["mines"]
+            opened = sum(revealed[rr][cc]
+                        for rr in range(session["rows"])
+                        for cc in range(session["cols"]))
+            await call.answer()
+            try:
+                await call.message.edit_reply_markup(reply_markup=kb)
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.error(f"Sapper cb error: {e}", exc_info=True)
+        await call.answer("⚠️ Ошибка", show_alert=True)
+
 # ─── Фоновая задача: доход за рабство ─────────────────────────────────────────
 
 async def income_loop():
@@ -1740,6 +2056,7 @@ async def main():
         types.BotCommand(command="handcuff",  description="Надеть наручники на заложника/раба"),
         types.BotCommand(command="trank",     description="Транквилизатор (ответом)"),
         types.BotCommand(command="adren",     description="Статус адреналина"),
+        types.BotCommand(command="911",       description="Вызвать копов (только в рабстве)"),
     ])
     asyncio.create_task(income_loop())
     await dp.start_polling(bot)
