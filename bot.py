@@ -1,16 +1,14 @@
 import os
 import random
-import math
 import time
 import sqlite3
 import asyncio
 import logging
 from pathlib import Path
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.exceptions import TelegramBadRequest
 
 # 🔑 Токен бота
 BOT_TOKEN = "8183582932:AAEIas0VlMxWSDvOLap_y6cTsZ9yqicmhYc"
@@ -58,33 +56,24 @@ PUNCH_TEXTS = [
     "{attacker} ударил {victim} по плечу", "{attacker} ударил {victim} по предплечью",
     "{attacker} ударил {victim} по локтю", "{attacker} ударил {victim} по запястью",
     "{attacker} ударил {victim} по кисти", "{attacker} ударил {victim} по пальцам",
-    "{attacker} ударил {victim} по груди", "{attacker} ударил {victim} по рёбрам",
-    "{attacker} ударил {victim} по животу", "{attacker} ударил {victim} по пояснице",
+    "{attacker} ударил {victim} по рёбрам", "{attacker} ударил {victim} по пояснице",
     "{attacker} ударил {victim} по тазу", "{attacker} ударил {victim} по бедру",
     "{attacker} ударил {victim} по колену", "{attacker} ударил {victim} по голени",
     "{attacker} ударил {victim} по лодыжке", "{attacker} ударил {victim} по стопе",
     "{attacker} ударил {victim} по пятке", "{attacker} ударил {victim} по носку",
     "{attacker} ударил {victim} по мизинцу", "{attacker} ударил {victim} по большому пальцу",
     "{attacker} ударил {victim} по указательному", "{attacker} ударил {victim} по среднему",
-    "{attacker} ударил {victim} по безымянному", "{attacker} ударил {victim} по мизинцу",
-    "{attacker} ударил {victim} по ладони", "{attacker} ударил {victim} по тыльной стороне",
-    "{attacker} ударил {victim} по локтю", "{attacker} ударил {victim} по плечевому суставу",
+    "{attacker} ударил {victim} по безымянному", "{attacker} ударил {victim} по ладони",
+    "{attacker} ударил {victim} по тыльной стороне", "{attacker} ударил {victim} по плечевому суставу",
     "{attacker} ударил {victim} по ключице", "{attacker} ударил {victim} по лопатке",
-    "{attacker} ударил {victim} по позвоночнику", "{attacker} ударил {victim} по шее",
-    "{attacker} ударил {victim} по кадыку", "{attacker} ударил {victim} по горлу",
-    "{attacker} ударил {victim} по трахее", "{attacker} ударил {victim} по артерии",
-    "{attacker} ударил {victim} по вене", "{attacker} ударил {victim} по капилляру",
+    "{attacker} ударил {victim} по позвоночнику", "{attacker} ударил {victim} по кадыку",
+    "{attacker} ударил {victim} по горлу", "{attacker} ударил {victim} по трахее",
     "{attacker} ударил {victim} по нерву", "{attacker} ударил {victim} по мышце",
-    "{attacker} ударил {victim} по сухожилию", "{attacker} ударил {victim} по связке",
-    "{attacker} ударил {victim} по хрящу", "{attacker} ударил {victim} по кости",
-    "{attacker} ударил {victim} по коже", "{attacker} ударил {victim} по жировой ткани",
-    "{attacker} ударил {victim} по волосам", "{attacker} ударил {victim} по ногтям",
-    "{attacker} ударил {victim} по ресницам", "{attacker} ударил {victim} по бровям",
-    "{attacker} ударил {victim} по щекам", "{attacker} ударил {victim} по лбу",
-    "{attacker} ударил {victim} по затылку", "{attacker} ударил {victim} по макушке"
+    "{attacker} ударил {victim} по сухожилию", "{attacker} ударил {victim} по кости",
+    "{attacker} ударил {victim} по коже", "{attacker} ударил {victim} по волосам",
+    "{attacker} ударил {victim} по щекам", "{attacker} ударил {victim} по макушке"
 ]
 
-# 💩 10 текстов «обосрался»
 POOP_TEXTS = [
     "😱 {nick} обосрался от страха!",
     "💩 После увиденного {nick} не удержался и обосрался!",
@@ -154,12 +143,16 @@ def _get_user(uid, cid, name):
     finally:
         conn.close()
 
-def _upd_user(uid, cid, **kw):
+def _upd_user(uid, cid, fields: dict):
+    """Обновляет поля пользователя. fields — словарь {поле: значение}"""
     conn = _db()
     try:
         c = conn.cursor()
-        sets = ", ".join(f"{k}=?" for k in kw)
-        c.execute(f"UPDATE users SET {sets} WHERE user_id=? AND chat_id=?", [*kw.values(), uid, cid])
+        sets = ", ".join(f"{k}=?" for k in fields)
+        c.execute(
+            f"UPDATE users SET {sets} WHERE user_id=? AND chat_id=?",
+            [*fields.values(), uid, cid]
+        )
         conn.commit()
     finally:
         conn.close()
@@ -173,16 +166,20 @@ def _recalc_hp(uid, cid):
     if gained > 0:
         nhp = min(u["max_hp"], u["hp"] + gained)
         if nhp != u["hp"]:
-            _upd_user(uid, cid, hp=nhp, last_hp_update=now)
+            _upd_user(uid, cid, {"hp": nhp, "last_hp_update": now})
     return _get_user(uid, cid, "")
 
 def clean_nick(t):
     return (t or "User").replace("@", "").replace("[", "").replace("]", "").replace("(", "").replace(")", "").strip()
 
-# 🔁 Хелпер для БД в async
+# 🔁 Хелпер для БД в async — поддерживает positional args
 async def db_task(func, *args):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, func, *args)
+
+# Обёртка для _upd_user через db_task (принимает dict)
+async def async_upd(uid, cid, fields: dict):
+    await db_task(_upd_user, uid, cid, fields)
 
 # 🥊 Удар
 async def do_punch(aid, aname, vid, cid, auto=False):
@@ -194,18 +191,20 @@ async def do_punch(aid, aname, vid, cid, auto=False):
         if not auto:
             cd = COOLDOWNS["punch"] - (now - att["last_punch"])
             if cd > 0:
-                return await bot.send_message(cid, f"⏳ {att['username']}, кулдаун: {int(cd // 60)}м {int(cd % 60)}с")
+                return await bot.send_message(
+                    cid, f"⏳ {att['username']}, кулдаун: {int(cd // 60)}м {int(cd % 60)}с"
+                )
 
         # Щит
         if vic["shield"] == 1:
-            await db_task(_upd_user, vid, cid, shield=0)
+            await async_upd(vid, cid, {"shield": 0})
             return await bot.send_message(cid, f"🛡️ Щит {vic['username']} поглотил удар!")
 
         # Откуп
         if vic["debuff_payoff"] > 0 and vic["money"] > 0 and random.randint(1, 100) <= vic["debuff_payoff"]:
             amt = vic["money"] // 2
-            await db_task(_upd_user, vid, cid, money=vic["money"] - amt)
-            await db_task(_upd_user, aid, cid, money=att["money"] + amt)
+            await async_upd(vid, cid, {"money": vic["money"] - amt})
+            await async_upd(aid, cid, {"money": att["money"] + amt})
             return await bot.send_message(cid, f"💸 Откуп! {vic['username']} отдал {amt}💰")
 
         # Джиу
@@ -213,7 +212,7 @@ async def do_punch(aid, aname, vid, cid, auto=False):
             await bot.send_message(cid, f"🥋 {vic['username']} использовал джиу-джитсу! Контратака!")
             await do_punch(vid, vic["username"], aid, cid, auto=True)
             if not auto:
-                await db_task(_upd_user, aid, cid, last_punch=now)
+                await async_upd(aid, cid, {"last_punch": now})
             return
 
         # Блок
@@ -224,8 +223,8 @@ async def do_punch(aid, aname, vid, cid, auto=False):
         dmg = 2 if (vic["debuff_weak"] > 0 and random.randint(1, 100) <= vic["debuff_weak"]) else 1
         nhp = max(0, vic["hp"] - dmg)
         take = vic["money"] // 4
-        await db_task(_upd_user, vid, cid, hp=nhp, money=max(0, vic["money"] - take))
-        await db_task(_upd_user, aid, cid, money=att["money"] + take)
+        await async_upd(vid, cid, {"hp": nhp, "money": max(0, vic["money"] - take)})
+        await async_upd(aid, cid, {"money": att["money"] + take})
 
         txt = random.choice(PUNCH_TEXTS).format(attacker=att["username"], victim=vic["username"])
         msg = f"💥 {txt}\n💰 +{take} | ❤️ {vic['username']}: {nhp}/{vic['max_hp']}"
@@ -243,7 +242,7 @@ async def do_punch(aid, aname, vid, cid, auto=False):
             if valid:
                 st = random.choice(valid)
                 nv = vic[st] - 1 if st in POSITIVE_STATS else vic[st] + 1
-                await db_task(_upd_user, vid, cid, **{st: nv})
+                await async_upd(vid, cid, {st: nv})
                 sign = "📉" if st in POSITIVE_STATS else "📈"
                 msg += f"\n{sign} {STAT_NAMES[st]}: {vic[st]}% → {nv}%"
 
@@ -251,50 +250,61 @@ async def do_punch(aid, aname, vid, cid, auto=False):
         conn = _db()
         try:
             c = conn.cursor()
-            c.execute("SELECT username, debuff_fear FROM users WHERE chat_id=? AND debuff_fear>0", (cid,))
-            for nm, fl in c.fetchall():
-                if random.randint(1, 100) <= fl:
-                    await bot.send_message(cid, random.choice(POOP_TEXTS).format(nick=nm))
+            c.execute(
+                "SELECT username, debuff_fear FROM users WHERE chat_id=? AND debuff_fear>0",
+                (cid,)
+            )
+            fear_rows = c.fetchall()
         finally:
             conn.close()
 
+        for nm, fl in fear_rows:
+            if random.randint(1, 100) <= fl:
+                await bot.send_message(cid, random.choice(POOP_TEXTS).format(nick=nm))
+
         if not auto:
-            await db_task(_upd_user, aid, cid, last_punch=now)
+            await async_upd(aid, cid, {"last_punch": now})
+
         await bot.send_message(cid, msg)
 
     except Exception as e:
         logger.error(f"❌ Punch error: {e}", exc_info=True)
         await bot.send_message(cid, "⚠️ Ошибка при ударе. Попробуйте позже.")
 
-# 🛒 Магазин
+# 🛒 Магазин callback
 async def shop_cb(call: types.CallbackQuery):
     try:
         item = call.data.split(":")[1]
-        u = await db_task(_get_user, call.from_user.id, call.message.chat.id, clean_nick(call.from_user.full_name))
+        uid = call.from_user.id
+        cid = call.message.chat.id
+        u = await db_task(_get_user, uid, cid, clean_nick(call.from_user.full_name))
         now = time.time()
 
         if item == "skip":
             if u["money"] < 3:
                 return await call.answer("Нужно 3💰", show_alert=True)
-            await db_task(_upd_user, u["user_id"], call.message.chat.id, money=u["money"] - 3, last_punch=now - COOLDOWNS["punch"])
+            await async_upd(uid, cid, {"money": u["money"] - 3, "last_punch": now - COOLDOWNS["punch"]})
             await call.answer("Кулдаун сброшен!", show_alert=True)
             await call.message.edit_text(f"✅ {u['username']} купил сброс кулдауна")
+
         elif item == "life":
             if u["money"] < 5:
                 return await call.answer("Нужно 5💰", show_alert=True)
-            if u["hp"] >= 3:
+            if u["hp"] >= u["max_hp"]:
                 return await call.answer("Максимум жизней!", show_alert=True)
-            await db_task(_upd_user, u["user_id"], call.message.chat.id, money=u["money"] - 5, hp=u["hp"] + 1)
+            await async_upd(uid, cid, {"money": u["money"] - 5, "hp": u["hp"] + 1})
             await call.answer("Жизнь восстановлена!", show_alert=True)
             await call.message.edit_text(f"❤️ {u['username']} +1 HP")
+
         elif item == "shield":
             if u["money"] < 4:
                 return await call.answer("Нужно 4💰", show_alert=True)
             if u["shield"] == 1:
                 return await call.answer("Щит уже есть!", show_alert=True)
-            await db_task(_upd_user, u["user_id"], call.message.chat.id, money=u["money"] - 4, shield=1)
+            await async_upd(uid, cid, {"money": u["money"] - 4, "shield": 1})
             await call.answer("Щит получен!", show_alert=True)
             await call.message.edit_text(f"🛡️ {u['username']} купил щит")
+
     except Exception as e:
         logger.error(f"❌ Shop error: {e}", exc_info=True)
         await call.answer("⚠️ Ошибка магазина", show_alert=True)
@@ -303,8 +313,6 @@ async def shop_cb(call: types.CallbackQuery):
 @dp.errors()
 async def errors_handler(update: types.Update, exception: Exception):
     logger.error(f"🔥 UNHANDLED ERROR: {type(exception).__name__}: {exception}", exc_info=True)
-    if isinstance(update, types.Message) and update.message:
-        await update.message.answer("⚠️ Произошла ошибка. Попробуйте позже.")
     return True
 
 # 📝 Handlers
@@ -353,7 +361,7 @@ async def qcmd(call: types.CallbackQuery):
         if cmd in cmds:
             await cmds[cmd](call.message)
         elif cmd == "casino":
-            await call.message.answer("🎰 Пример: `/casino 100`")
+            await call.message.answer("🎰 Пример: /casino 100")
     except Exception as e:
         logger.error(f"❌ Quick cmd error: {e}", exc_info=True)
         await call.answer("⚠️ Ошибка", show_alert=True)
@@ -362,13 +370,18 @@ async def qcmd(call: types.CallbackQuery):
 async def cmd_punch(m: types.Message):
     try:
         if not m.reply_to_message:
-            return await m.answer("⚠️ Ответьте на игрока!")
-        u = await db_task(_get_user, m.from_user.id, m.chat.id, clean_nick(m.from_user.full_name))
+            return await m.answer("⚠️ Ответьте на сообщение игрока!")
+        uid = m.from_user.id
+        u = await db_task(_get_user, uid, m.chat.id, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
-            return await m.answer("💀 0 HP! Ждите реген или /shop")
-        if m.reply_to_message.from_user.id == bot.id:
-            return await m.answer("🤖 Ботов не бьём")
-        await do_punch(m.from_user.id, u["username"], m.reply_to_message.from_user.id, m.chat.id)
+            return await m.answer("💀 0 HP! Ждите реген или купите жизнь в /shop")
+        target = m.reply_to_message.from_user
+        if target.id == bot.id:
+            return await m.answer("🤖 Ботов не бьём!")
+        if target.id == uid:
+            return await m.answer("🤡 Себя бить нельзя!")
+        await db_task(_get_user, target.id, m.chat.id, clean_nick(target.full_name))
+        await do_punch(uid, u["username"], target.id, m.chat.id)
     except Exception as e:
         logger.error(f"❌ /punch error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка удара")
@@ -376,15 +389,18 @@ async def cmd_punch(m: types.Message):
 @dp.message(Command("job"))
 async def cmd_job(m: types.Message):
     try:
-        u = await db_task(_get_user, m.from_user.id, m.chat.id, clean_nick(m.from_user.full_name))
+        uid = m.from_user.id
+        cid = m.chat.id
+        u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Нельзя работать")
         now = time.time()
         cd = COOLDOWNS["job"] - (now - u["last_job"])
         if cd > 0:
-            return await m.answer(f"⏳ Работа через {int(cd // 60)}м {int(cd % 60)}с")
-        await db_task(_upd_user, u["user_id"], m.chat.id, money=u["money"] + 1, last_job=now)
-        await m.answer(f"💼 {u['username']} +1💰 | Баланс: {u['money'] + 1}")
+            return await m.answer(f"⏳ Работа доступна через {int(cd // 60)}м {int(cd % 60)}с")
+        new_money = u["money"] + 1
+        await async_upd(uid, cid, {"money": new_money, "last_job": now})
+        await m.answer(f"💼 {u['username']} заработал +1💰 | Баланс: {new_money}💰")
     except Exception as e:
         logger.error(f"❌ /job error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка работы")
@@ -392,17 +408,20 @@ async def cmd_job(m: types.Message):
 @dp.message(Command("sport"))
 async def cmd_sport(m: types.Message):
     try:
-        u = await db_task(_get_user, m.from_user.id, m.chat.id, clean_nick(m.from_user.full_name))
+        uid = m.from_user.id
+        cid = m.chat.id
+        u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Тренировки запрещены")
         now = time.time()
         cd = COOLDOWNS["sport"] - (now - u["last_sport"])
         if cd > 0:
-            return await m.answer(f"⏳ Тренировка через {int(cd // 60)}м {int(cd % 60)}с")
+            return await m.answer(f"⏳ Тренировка доступна через {int(cd // 60)}м {int(cd % 60)}с")
         st = random.choice(POSITIVE_STATS)
-        nv = min(100, u[st] + 1)
-        await db_task(_upd_user, u["user_id"], m.chat.id, **{st: nv}, last_sport=now)
-        await m.answer(f"🏋️ {u['username']} +1% {STAT_NAMES[st]}: {u[st]}→{nv}%")
+        old_val = u[st]
+        nv = min(100, old_val + 1)
+        await async_upd(uid, cid, {st: nv, "last_sport": now})
+        await m.answer(f"🏋️ {u['username']} прокачал {STAT_NAMES[st]}: {old_val}% → {nv}%")
     except Exception as e:
         logger.error(f"❌ /sport error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка тренировки")
@@ -411,11 +430,11 @@ async def cmd_sport(m: types.Message):
 async def cmd_shop(m: types.Message):
     try:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Сброс кулдауна - 3💰", callback_data="shop:skip")],
-            [InlineKeyboardButton(text="❤️ +1 жизнь - 5💰", callback_data="shop:life")],
-            [InlineKeyboardButton(text="🛡️ Щит (1 удар) - 4💰", callback_data="shop:shield")]
+            [InlineKeyboardButton(text="🚀 Сброс кулдауна (punch) — 3💰", callback_data="shop:skip")],
+            [InlineKeyboardButton(text="❤️ +1 жизнь — 5💰", callback_data="shop:life")],
+            [InlineKeyboardButton(text="🛡️ Щит (блок 1 удара) — 4💰", callback_data="shop:shield")]
         ])
-        await m.answer("🏪 Магазин (доступен при 0 HP)", reply_markup=kb)
+        await m.answer("🏪 **Магазин** (доступен всегда, даже при 0 HP)", reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"❌ /shop error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка магазина")
@@ -427,28 +446,36 @@ async def shop_h(call: types.CallbackQuery):
 @dp.message(Command("casino"))
 async def cmd_casino(m: types.Message):
     try:
-        u = await db_task(_get_user, m.from_user.id, m.chat.id, clean_nick(m.from_user.full_name))
+        uid = m.from_user.id
+        cid = m.chat.id
+        u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Казино закрыто")
         parts = m.text.split()
         if len(parts) < 2:
-            return await m.answer("🎰 /casino <сумма>")
+            return await m.answer("🎰 Использование: /casino <сумма>")
         try:
             bet = int(parts[1])
         except ValueError:
             return await m.answer("❌ Введите целое число")
         if bet <= 0:
-            return await m.answer("❌ Ставка должна быть > 0")
+            return await m.answer("❌ Ставка должна быть больше 0")
         if u["money"] < bet:
-            return await m.answer(f"💸 Нужно {bet}💰, у вас {u['money']}💰")
+            return await m.answer(f"💸 Недостаточно денег. Нужно {bet}💰, у вас {u['money']}💰")
 
         r = random.random()
         mult = 0 if r < 0.40 else 1 if r < 0.70 else 2 if r < 0.90 else 3 if r < 0.98 else 5
         win = bet * mult
-        nm = u["money"] - bet + win
-        await db_task(_upd_user, u["user_id"], m.chat.id, money=nm, casino_won=u["casino_won"] + win)
-        res = {0: "💀 Проигрыш", 1: "🔄 Возврат", 2: "🎉 x2", 3: "🔥 x3", 5: "💎 x5 ДЖЕКПОТ"}[mult]
-        await m.answer(f"🎰 {u['username']}: {res}\n💰 Выпало {mult}x | +{win} | Баланс: {nm}")
+        new_money = u["money"] - bet + win
+        new_casino_won = u["casino_won"] + win
+        await async_upd(uid, cid, {"money": new_money, "casino_won": new_casino_won})
+
+        res_text = {0: "💀 Проигрыш", 1: "🔄 Возврат", 2: "🎉 x2 Победа!", 3: "🔥 x3 Большой выигрыш!", 5: "💎 x5 ДЖЕКПОТ!!!"}[mult]
+        await m.answer(
+            f"🎰 {u['username']}: {res_text}\n"
+            f"Ставка: {bet}💰 | Множитель: x{mult} | Выигрыш: {win}💰\n"
+            f"💰 Баланс: {new_money}💰"
+        )
     except Exception as e:
         logger.error(f"❌ /casino error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка казино")
@@ -466,13 +493,16 @@ async def cmd_casinotop(m: types.Message):
             rows = c.fetchall()
         finally:
             conn.close()
+
         if not rows:
-            return await m.answer("📊 Нет данных")
-        txt = f"🏆 Топ лудоманов (чат {m.chat.id}):\n"
-        for i, (n, w) in enumerate(rows, 1):
+            return await m.answer("📊 Пока никто не играл в казино")
+
+        txt = "🏆 **Топ лудоманов чата:**\n"
+        for i, row in enumerate(rows, 1):
+            n, w = row["username"], row["casino_won"]
             medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
             txt += f"{medal} {n}: {w}💰\n"
-        await m.answer(txt)
+        await m.answer(txt, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"❌ /casinotop error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка топа")
@@ -480,24 +510,27 @@ async def cmd_casinotop(m: types.Message):
 @dp.message(Command("stats", "profile"))
 async def cmd_stats(m: types.Message):
     try:
-        u = await db_task(_get_user, m.from_user.id, m.chat.id, clean_nick(m.from_user.full_name))
-        u = await db_task(_recalc_hp, u["user_id"], m.chat.id)
+        uid = m.from_user.id
+        cid = m.chat.id
+        await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
+        u = await db_task(_recalc_hp, uid, cid)
         txt = (
-            f"👤 {u['username']}\n"
+            f"👤 **{u['username']}**\n"
             f"❤️ HP: {u['hp']}/{u['max_hp']}\n"
             f"💰 Деньги: {u['money']}\n"
             f"🛡️ Щит: {'✅' if u['shield'] else '❌'}\n\n"
-            f"📈 Навыки:\n"
+            f"📈 **Навыки:**\n"
             f"🔄 Регенерация: {u['stat_regen']}%\n"
             f"🥊 Отпор: {u['stat_counter']}%\n"
             f"🛡️ Блок: {u['stat_block']}%\n"
             f"🥋 Джиу-джитсу: {u['stat_jiu']}%\n\n"
-            f"📉 Дебаффы:\n"
+            f"📉 **Дебаффы:**\n"
             f"🦠 Слабость: {u['debuff_weak']}%\n"
             f"😨 Страх: {u['debuff_fear']}%\n"
-            f"💸 Откуп: {u['debuff_payoff']}%"
+            f"💸 Откуп: {u['debuff_payoff']}%\n\n"
+            f"🎰 Выиграно в казино: {u['casino_won']}💰"
         )
-        await m.answer(txt)
+        await m.answer(txt, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"❌ /stats error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка загрузки статов")
@@ -506,14 +539,14 @@ async def main():
     init_db()
     logger.info(f"✅ БД: {DB_PATH}")
     await bot.set_my_commands([
-        types.BotCommand(command="help", description="Помощь + кнопки"),
-        types.BotCommand(command="stats", description="Мои статы"),
-        types.BotCommand(command="punch", description="Ударить (ответом)"),
-        types.BotCommand(command="job", description="Работа +1💰"),
-        types.BotCommand(command="sport", description="Прокачка"),
-        types.BotCommand(command="casino", description="Казино: /casino 100"),
-        types.BotCommand(command="casinotop", description="Топ чата"),
-        types.BotCommand(command="shop", description="Магазин")
+        types.BotCommand(command="help",       description="Помощь + кнопки"),
+        types.BotCommand(command="stats",      description="Мои статы"),
+        types.BotCommand(command="punch",      description="Ударить (ответом на сообщение)"),
+        types.BotCommand(command="job",        description="Работа +1💰"),
+        types.BotCommand(command="sport",      description="Прокачка навыка"),
+        types.BotCommand(command="casino",     description="Казино: /casino 100"),
+        types.BotCommand(command="casinotop",  description="Топ казино чата"),
+        types.BotCommand(command="shop",       description="Магазин")
     ])
     logger.info("✅ Commands set")
     await dp.start_polling(bot)
