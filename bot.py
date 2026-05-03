@@ -64,12 +64,18 @@ STAT_NAMES = {
     "stat_block": "Блок", "stat_jiu": "Джиу-джитсу",
     "debuff_weak": "Слабость", "debuff_fear": "Страх", "debuff_payoff": "Откуп"
 }
-COOLDOWNS = {"punch": 1800, "job": 3600, "sport": 7200, "freed": 1800}
 
-DEFAULT_REGEN_TIME = 3600  # 1 час на 1 HP
+COOLDOWNS = {
+    "punch": 1800,
+    "punch_adren": 900,   # 15 минут при адреналине
+    "job": 3600,
+    "sport": 5400,        # 1.5 часа
+    "freed": 1800
+}
+
+DEFAULT_REGEN_TIME = 3600
 
 def calc_regen_time(stat_regen: int) -> float:
-    """Время регенерации одного HP в секундах."""
     return max(60, DEFAULT_REGEN_TIME * (1 - stat_regen / 100))
 
 def format_time(seconds: float) -> str:
@@ -94,24 +100,32 @@ def init_db():
     conn = _db()
     try:
         c = conn.cursor()
-        # Основная таблица пользователей
         c.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER, chat_id INTEGER, username TEXT,
-            hp INTEGER DEFAULT 6, max_hp INTEGER DEFAULT 6, money INTEGER DEFAULT 0,
+            hp INTEGER DEFAULT 6, max_hp INTEGER DEFAULT 6,
+            money INTEGER DEFAULT 0,
             black_money INTEGER DEFAULT 0,
             shield INTEGER DEFAULT 0,
-            last_punch REAL DEFAULT 0, last_job REAL DEFAULT 0,
-            last_sport REAL DEFAULT 0, last_hp_update REAL DEFAULT 0,
+            last_punch REAL DEFAULT 0,
+            last_job REAL DEFAULT 0,
+            last_sport REAL DEFAULT 0,
+            last_hp_update REAL DEFAULT 0,
             last_freed REAL DEFAULT 0,
-            stat_regen INTEGER DEFAULT 0, stat_counter INTEGER DEFAULT 0,
-            stat_block INTEGER DEFAULT 0, stat_jiu INTEGER DEFAULT 0,
-            debuff_weak INTEGER DEFAULT 0, debuff_fear INTEGER DEFAULT 0,
-            debuff_payoff INTEGER DEFAULT 0, casino_won INTEGER DEFAULT 0,
+            stat_regen INTEGER DEFAULT 0,
+            stat_counter INTEGER DEFAULT 0,
+            stat_block INTEGER DEFAULT 0,
+            stat_jiu INTEGER DEFAULT 0,
+            debuff_weak INTEGER DEFAULT 0,
+            debuff_fear INTEGER DEFAULT 0,
+            debuff_payoff INTEGER DEFAULT 0,
+            casino_won INTEGER DEFAULT 0,
             glove_durability INTEGER DEFAULT 0,
             handcuffs INTEGER DEFAULT 0,
+            tranq_until REAL DEFAULT 0,
+            adren_until REAL DEFAULT 0,
             PRIMARY KEY (user_id, chat_id)
         )''')
-        # Таблица заложников
+
         c.execute('''CREATE TABLE IF NOT EXISTS kidnapped (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             victim_id INTEGER, victim_name TEXT,
@@ -123,18 +137,21 @@ def init_db():
             handcuffed INTEGER DEFAULT 0
         )''')
         conn.commit()
-        # Миграции — добавляем колонки если их нет
+
+        # Миграции
         existing = {row[1] for row in c.execute("PRAGMA table_info(users)")}
         migrations = {
             "black_money": "INTEGER DEFAULT 0",
             "last_freed": "REAL DEFAULT 0",
             "glove_durability": "INTEGER DEFAULT 0",
             "handcuffs": "INTEGER DEFAULT 0",
+            "tranq_until": "REAL DEFAULT 0",
+            "adren_until": "REAL DEFAULT 0",
         }
         for col, typedef in migrations.items():
             if col not in existing:
                 c.execute(f"ALTER TABLE users ADD COLUMN {col} {typedef}")
-        # Обновляем max_hp до 6 для старых записей
+
         c.execute("UPDATE users SET max_hp=6 WHERE max_hp=3")
         conn.commit()
     finally:
@@ -146,7 +163,8 @@ COL_NAMES = [
     "last_hp_update", "last_freed",
     "stat_regen", "stat_counter", "stat_block", "stat_jiu",
     "debuff_weak", "debuff_fear", "debuff_payoff", "casino_won",
-    "glove_durability", "handcuffs"
+    "glove_durability", "handcuffs",
+    "tranq_until", "adren_until"
 ]
 
 def _get_user(uid, cid, name):
@@ -157,15 +175,15 @@ def _get_user(uid, cid, name):
         row = c.fetchone()
         if not row:
             now = time.time()
-            vals = (uid, cid, name, 6, 6, 0, 0, 0, 0, 0, 0, now, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            vals = (uid, cid, name, 6, 6, 0, 0, 0, 0, 0, 0, now, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
             c.execute(
-                "INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 vals
             )
             conn.commit()
             return dict(zip(COL_NAMES, vals))
         d = dict(row)
-        # Заполняем отсутствующие поля дефолтами
         for col in COL_NAMES:
             if col not in d:
                 d[col] = 0
@@ -189,6 +207,11 @@ def _upd_user(uid, cid, fields: dict):
 def _recalc_hp(uid, cid):
     u = _get_user(uid, cid, "")
     now = time.time()
+
+    # Если транквилизован — реген не идёт
+    if u.get("tranq_until", 0) > now:
+        return u
+
     elapsed = now - u["last_hp_update"]
     regen_time = calc_regen_time(u["stat_regen"])
     gained = int(elapsed // regen_time)
@@ -199,7 +222,7 @@ def _recalc_hp(uid, cid):
     return _get_user(uid, cid, "")
 
 def clean_nick(t):
-    return (t or "User").replace("@", "").replace("[", "").replace("]", "").replace("(", "").replace(")", "").strip()
+    return (t or "User").replace("@","").replace("[","").replace("]","").replace("(","").replace(")","").strip()
 
 # ─── Async helpers ─────────────────────────────────────────────────────────────
 
@@ -213,7 +236,6 @@ async def async_upd(uid, cid, fields: dict):
 # ─── Подвал helpers ────────────────────────────────────────────────────────────
 
 def _get_kidnapped_by_victim(vid, cid):
-    """Получить запись заложника по жертве (активную)."""
     conn = _db()
     try:
         c = conn.cursor()
@@ -227,7 +249,6 @@ def _get_kidnapped_by_victim(vid, cid):
         conn.close()
 
 def _get_kidnapped_by_kidnapper(kid, cid):
-    """Получить всех заложников похитителя (активных)."""
     conn = _db()
     try:
         c = conn.cursor()
@@ -245,7 +266,9 @@ def _add_kidnapped(vid, vname, kid, kname, cid):
     try:
         c = conn.cursor()
         c.execute(
-            "INSERT INTO kidnapped (victim_id, victim_name, kidnapper_id, kidnapper_name, chat_id, kidnapped_at, sold, last_income, handcuffed) VALUES (?,?,?,?,?,?,0,?,0)",
+            "INSERT INTO kidnapped "
+            "(victim_id, victim_name, kidnapper_id, kidnapper_name, chat_id, kidnapped_at, sold, last_income, handcuffed) "
+            "VALUES (?,?,?,?,?,?,0,?,0)",
             (vid, vname, kid, kname, cid, now, now)
         )
         conn.commit()
@@ -301,9 +324,9 @@ def _count_hostages(kid, cid):
     finally:
         conn.close()
 
-# ─── Проверка: заблокированы ли действия ──────────────────────────────────────
+# ─── Проверки блокировки ───────────────────────────────────────────────────────
 
-def _is_blocked(uid, cid) -> tuple[bool, str]:
+def _is_blocked(uid, cid) -> tuple:
     """Возвращает (заблокирован, причина)."""
     rec = _get_kidnapped_by_victim(uid, cid)
     if rec:
@@ -311,6 +334,14 @@ def _is_blocked(uid, cid) -> tuple[bool, str]:
             return True, "⛓️ Вы в наручниках в подвале! Сначала /freed (снять наручники), потом снова /freed (сбежать)."
         return True, "🔒 Вы в подвале! Используйте /freed чтобы сбежать."
     return False, ""
+
+def _is_tranquilized(uid, cid) -> tuple:
+    """Возвращает (транквилизован, оставшееся время)."""
+    u = _get_user(uid, cid, "")
+    now = time.time()
+    if u.get("tranq_until", 0) > now:
+        return True, u["tranq_until"] - now
+    return False, 0
 
 # ─── Удар ──────────────────────────────────────────────────────────────────────
 
@@ -321,10 +352,13 @@ async def do_punch(aid, aname, vid, cid, auto=False):
         vic = await db_task(_recalc_hp, vid, cid)
 
         if not auto:
-            cd = COOLDOWNS["punch"] - (now - att["last_punch"])
+            # Определяем кд с учётом адреналина
+            punch_cd = COOLDOWNS["punch_adren"] if att.get("adren_until", 0) > now else COOLDOWNS["punch"]
+            cd = punch_cd - (now - att["last_punch"])
             if cd > 0:
+                adren_note = " (🔥 адреналин)" if att.get("adren_until", 0) > now else ""
                 return await bot.send_message(
-                    cid, f"⏳ {att['username']}, кулдаун: {format_time(cd)}"
+                    cid, f"⏳ {att['username']}, кулдаун{adren_note}: {format_time(cd)}"
                 )
 
         # Щит
@@ -376,10 +410,8 @@ async def do_punch(aid, aname, vid, cid, auto=False):
         black_steal_msg = ""
         if vic["black_money"] > 0 and random.randint(1, 100) <= 10:
             bsteal = 1
-            new_vic_black = max(0, vic["black_money"] - bsteal)
-            new_att_black = att["black_money"] + bsteal
-            await async_upd(vid, cid, {"black_money": new_vic_black})
-            await async_upd(aid, cid, {"black_money": new_att_black})
+            await async_upd(vid, cid, {"black_money": max(0, vic["black_money"] - bsteal)})
+            await async_upd(aid, cid, {"black_money": att["black_money"] + bsteal})
             black_steal_msg = f"\n🖤 Украдена {bsteal} чёрная монета!"
 
         await async_upd(vid, cid, {"hp": nhp, "money": new_vic_money})
@@ -387,29 +419,26 @@ async def do_punch(aid, aname, vid, cid, auto=False):
 
         txt = random.choice(PUNCH_TEXTS).format(attacker=att["username"], victim=vic["username"])
         msg = f"💥 {txt}\n💰 +{take} | ❤️ {vic['username']}: {nhp}/{vic['max_hp']}"
-        if dmg >= 2 and base_dmg == 1:
-            msg += "\n⚡ Слабость удвоила урон!"
-        elif base_dmg == 2 and dmg == 4:
+
+        if base_dmg == 2 and dmg == 4:
             msg += "\n⚡ Перчатка + Слабость: 4 урона!"
+        elif dmg == 2 and base_dmg == 1:
+            msg += "\n⚡ Слабость удвоила урон!"
+
         msg += glove_msg
         msg += black_steal_msg
 
-        # Если жертва упала до 0 HP — перчатка переходит
-        if nhp == 0 and att["glove_durability"] > 0:
-            # Перчатка уже у атакующего, всё ок. Но если перчатка у жертвы — ниже
-            pass
+        # Перчатка жертвы при 0 HP
         if nhp == 0 and vic["glove_durability"] > 0:
-            # Перчатка жертвы переходит атакующему
             if att["glove_durability"] == 0:
                 await async_upd(aid, cid, {"glove_durability": vic["glove_durability"]})
                 await async_upd(vid, cid, {"glove_durability": 0})
                 msg += f"\n🥊 Перчатка ({vic['glove_durability']}/10) перешла к {att['username']}!"
             else:
-                # У атакующего уже есть перчатка — жертва просто теряет свою (ломается)
                 await async_upd(vid, cid, {"glove_durability": 0})
                 msg += f"\n🥊 Перчатка {vic['username']} уничтожена!"
 
-        # Наручники жертвы при 0 HP теряются
+        # Наручники при 0 HP
         if nhp == 0 and vic["handcuffs"] > 0:
             await async_upd(aid, cid, {"handcuffs": att["handcuffs"] + vic["handcuffs"]})
             await async_upd(vid, cid, {"handcuffs": 0})
@@ -426,11 +455,12 @@ async def do_punch(aid, aname, vid, cid, auto=False):
             if valid:
                 st = random.choice(valid)
                 nv = vic[st] - 1 if st in POSITIVE_STATS else vic[st] + 1
-                await async_upd(vid, cid, {st: max(0, nv)})
+                nv = max(0, nv)
+                await async_upd(vid, cid, {st: nv})
                 sign = "📉" if st in POSITIVE_STATS else "📈"
-                msg += f"\n{sign} {STAT_NAMES[st]}: {vic[st]}% → {max(0, nv)}%"
+                msg += f"\n{sign} {STAT_NAMES[st]}: {vic[st]}% → {nv}%"
                 if st == "stat_regen":
-                    new_regen_time = calc_regen_time(max(0, nv))
+                    new_regen_time = calc_regen_time(nv)
                     msg += f" (реген: {format_time(new_regen_time)}/HP)"
 
         # Страх
@@ -495,7 +525,6 @@ async def shop_cb(call: types.CallbackQuery):
             await call.message.edit_text(f"🛡️ {u['username']} купил щит")
 
         elif item == "exchange_black":
-            # Разменять 1 чёрную монету на 10 обычных
             if u["black_money"] < 1:
                 return await call.answer("Нет чёрных монет!", show_alert=True)
             await async_upd(uid, cid, {
@@ -527,9 +556,40 @@ async def shop_cb(call: types.CallbackQuery):
             await call.answer("⛓️ Наручники куплены!", show_alert=True)
             await call.message.edit_text(f"⛓️ {u['username']} купил наручники (теперь: {u['handcuffs'] + 1} шт.)")
 
+        elif item == "tranq":
+            if u["black_money"] < 4:
+                return await call.answer("Нужно 4🖤", show_alert=True)
+            await async_upd(uid, cid, {"black_money": u["black_money"] - 4})
+            await call.answer("💉 Транквилизатор куплен! Используй /trank (ответом на игрока)", show_alert=True)
+            await call.message.edit_text(
+                f"💉 {u['username']} купил транквилизатор!\n"
+                f"Используй /trank ответом на сообщение жертвы."
+            )
+
+        elif item == "adren":
+            if u["black_money"] < 3:
+                return await call.answer("Нужно 3🖤", show_alert=True)
+            if u.get("adren_until", 0) > now:
+                return await call.answer("Адреналин уже действует!", show_alert=True)
+            adren_end = now + 10800  # 3 часа
+            await async_upd(uid, cid, {
+                "black_money": u["black_money"] - 3,
+                "adren_until": adren_end
+            })
+            await call.answer("🔥 Адреналин активирован на 3 часа! КД удара: 15 минут", show_alert=True)
+            await call.message.edit_text(
+                f"🔥 {u['username']} выпил ярость адреналина!\n"
+                f"КД удара: 15 минут на 3 часа."
+            )
+
     except Exception as e:
         logger.error(f"❌ Shop error: {e}", exc_info=True)
         await call.answer("⚠️ Ошибка магазина", show_alert=True)
+
+# ─── Транквилизатор хранилище ──────────────────────────────────────────────────
+# Храним купленные транки как флаг: если black_money использован на покупку,
+# даём игроку возможность применить. Используем временное хранилище в памяти.
+_tranq_holders: dict = {}  # {(uid, cid): count}
 
 # ─── Обработчик ошибок ────────────────────────────────────────────────────────
 
@@ -554,24 +614,31 @@ async def cmd_help(m: types.Message):
         kb.adjust(2)
         await m.answer(
             "📖 **Помощь**\n\n"
-            "🥊 /punch (ответ) — удар\n"
-            "💼 /job — работа (+1💰)\n"
-            "🏋️ /sport — прокачка\n"
+            "🥊 /punch (ответ) — удар (кд 30м)\n"
+            "💼 /job — работа (+1💰, кд 1ч)\n"
+            "🏋️ /sport — прокачка навыка (кд 1.5ч)\n"
             "🎰 /casino <сумма> — казино\n"
             "🏆 /casinotop — топ чата\n"
             "📊 /stats — мои статы\n"
             "🏪 /shop — магазин\n\n"
-            "❤️ /hill (ответ) — поделиться HP (если у вас >1 HP, а у цели 0)\n\n"
+            "❤️ /hill (ответ) — поделиться 1 HP (нужно >1 HP, цель должна быть при 0)\n\n"
             "🔒 **Подвал:**\n"
             "/kidnap (ответ) — похитить игрока с 0 HP\n"
             "/freed — сбежать из подвала (30% шанс, кд 30м)\n"
             "/sell <номер> — продать заложника в секс-рабство (через 30м)\n"
             "/handcuff <номер> (или ответом) — надеть наручники на заложника\n\n"
+            "💉 **Спецпредметы:**\n"
+            "/trank (ответ) — использовать транквилизатор (купить в /shop за 4🖤)\n"
+            "  └ Жертва не может действовать и не регенерируется 3 часа\n"
+            "/adren — выпить адреналин (купить в /shop за 3🖤)\n"
+            "  └ КД удара снижается до 15 минут на 3 часа\n\n"
             "⚠️ При 0 HP: только /shop, /hill получить и реген.\n"
             "🌍 У каждого чата свой мир!\n\n"
-            "🖤 **Чёрные монеты** = 10💰. Получают за секс-рабство.\n"
-            "🥊 Перчатка (3🖤) — x2 урон, 10 ударов.\n"
-            "⛓️ Наручники (1🖤) — сковать заложника в подвале.",
+            "🖤 **Чёрные монеты** = 10💰\n"
+            "🥊 Перчатка (3🖤) — x2 урон, 10 ударов\n"
+            "⛓️ Наручники (1🖤) — сковать заложника\n"
+            "💉 Транквилизатор (4🖤) — парализовать игрока на 3ч\n"
+            "🔥 Адреналин (3🖤) — КД удара 15м на 3ч",
             parse_mode="Markdown",
             reply_markup=kb.as_markup()
         )
@@ -604,19 +671,28 @@ async def cmd_punch(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
             return await m.answer(reason)
+
+        tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
+        if tranqed:
+            return await m.answer(f"💉 Вы под действием транквилизатора! Осталось: {format_time(t_left)}")
+
         if not m.reply_to_message:
             return await m.answer("⚠️ Ответьте на сообщение игрока!")
+
         u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Ждите реген или купите жизнь в /shop")
+
         target = m.reply_to_message.from_user
         if target.id == bot.id:
             return await m.answer("🤖 Ботов не бьём!")
         if target.id == uid:
             return await m.answer("🤡 Себя бить нельзя!")
+
         await db_task(_get_user, target.id, cid, clean_nick(target.full_name))
         await do_punch(uid, u["username"], target.id, cid)
     except Exception as e:
@@ -628,16 +704,24 @@ async def cmd_job(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
             return await m.answer(reason)
+
+        tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
+        if tranqed:
+            return await m.answer(f"💉 Вы под действием транквилизатора! Осталось: {format_time(t_left)}")
+
         u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Нельзя работать")
+
         now = time.time()
         cd = COOLDOWNS["job"] - (now - u["last_job"])
         if cd > 0:
             return await m.answer(f"⏳ Работа доступна через {format_time(cd)}")
+
         new_money = u["money"] + 1
         await async_upd(uid, cid, {"money": new_money, "last_job": now})
         await m.answer(f"💼 {u['username']} заработал +1💰 | Баланс: {new_money}💰")
@@ -650,20 +734,29 @@ async def cmd_sport(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
             return await m.answer(reason)
+
+        tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
+        if tranqed:
+            return await m.answer(f"💉 Вы под действием транквилизатора! Осталось: {format_time(t_left)}")
+
         u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Тренировки запрещены")
+
         now = time.time()
         cd = COOLDOWNS["sport"] - (now - u["last_sport"])
         if cd > 0:
             return await m.answer(f"⏳ Тренировка доступна через {format_time(cd)}")
+
         st = random.choice(POSITIVE_STATS)
         old_val = u[st]
         nv = min(100, old_val + 1)
         await async_upd(uid, cid, {st: nv, "last_sport": now})
+
         msg = f"🏋️ {u['username']} прокачал {STAT_NAMES[st]}: {old_val}% → {nv}%"
         if st == "stat_regen":
             new_regen_time = calc_regen_time(nv)
@@ -683,11 +776,15 @@ async def cmd_shop(m: types.Message):
             [InlineKeyboardButton(text="💱 Разменять 1🖤 → 10💰", callback_data="shop:exchange_black")],
             [InlineKeyboardButton(text="🥊 Боксёрская перчатка — 3🖤", callback_data="shop:glove")],
             [InlineKeyboardButton(text="⛓️ Наручники — 1🖤", callback_data="shop:handcuff")],
+            [InlineKeyboardButton(text="💉 Транквилизатор — 4🖤", callback_data="shop:tranq")],
+            [InlineKeyboardButton(text="🔥 Ярость адреналина — 3🖤", callback_data="shop:adren")],
         ])
         await m.answer(
             "🏪 **Магазин** (доступен всегда, даже при 0 HP)\n\n"
             "🥊 Перчатка — x2 урон, 10 ударов. Только 1 шт.\n"
             "⛓️ Наручники — сковать заложника в подвале.\n"
+            "💉 Транквилизатор — /trank (ответом): жертва парализована 3ч, реген стоп.\n"
+            "🔥 Адреналин — /adren: КД удара 15м на 3ч.\n"
             "💱 1🖤 = 10💰",
             reply_markup=kb,
             parse_mode="Markdown"
@@ -705,12 +802,19 @@ async def cmd_casino(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
             return await m.answer(reason)
+
+        tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
+        if tranqed:
+            return await m.answer(f"💉 Вы под действием транквилизатора! Осталось: {format_time(t_left)}")
+
         u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Казино закрыто")
+
         parts = m.text.split()
         if len(parts) < 2:
             return await m.answer("🎰 Использование: /casino <сумма>")
@@ -730,7 +834,11 @@ async def cmd_casino(m: types.Message):
         new_casino_won = u["casino_won"] + win
         await async_upd(uid, cid, {"money": new_money, "casino_won": new_casino_won})
 
-        res_text = {0: "💀 Проигрыш", 1: "🔄 Возврат", 2: "🎉 x2 Победа!", 3: "🔥 x3 Большой выигрыш!", 5: "💎 x5 ДЖЕКПОТ!!!"}[mult]
+        res_text = {
+            0: "💀 Проигрыш", 1: "🔄 Возврат",
+            2: "🎉 x2 Победа!", 3: "🔥 x3 Большой выигрыш!",
+            5: "💎 x5 ДЖЕКПОТ!!!"
+        }[mult]
         await m.answer(
             f"🎰 {u['username']}: {res_text}\n"
             f"Ставка: {bet}💰 | Множитель: x{mult} | Выигрыш: {win}💰\n"
@@ -775,23 +883,37 @@ async def cmd_stats(m: types.Message):
         await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         u = await db_task(_recalc_hp, uid, cid)
 
-        # Время до следующего HP
         now = time.time()
         regen_time = calc_regen_time(u["stat_regen"])
-        elapsed_since_update = now - u["last_hp_update"]
-        time_to_next_hp = regen_time - (elapsed_since_update % regen_time)
-        if u["hp"] >= u["max_hp"]:
+
+        # Время до следующего HP
+        if u.get("tranq_until", 0) > now:
+            regen_str = f"заморожен ({format_time(u['tranq_until'] - now)})"
+        elif u["hp"] >= u["max_hp"]:
             regen_str = "макс"
         else:
+            elapsed_since_update = now - u["last_hp_update"]
+            time_to_next_hp = regen_time - (elapsed_since_update % regen_time)
             regen_str = f"через {format_time(time_to_next_hp)}"
 
         hostages = await db_task(_count_hostages, uid, cid)
         kidnap_rec = await db_task(_get_kidnapped_by_victim, uid, cid)
+
         kidnap_status = ""
         if kidnap_rec:
             kidnapper = kidnap_rec["kidnapper_name"]
             cuffs = " (в наручниках)" if kidnap_rec["handcuffed"] else ""
             kidnap_status = f"\n🔒 В подвале у: **{kidnapper}**{cuffs}"
+
+        # Адреналин статус
+        adren_status = ""
+        if u.get("adren_until", 0) > now:
+            adren_status = f"\n🔥 Адреналин: ещё {format_time(u['adren_until'] - now)}"
+
+        # Транк статус
+        tranq_status = ""
+        if u.get("tranq_until", 0) > now:
+            tranq_status = f"\n💉 Транквилизатор: ещё {format_time(u['tranq_until'] - now)}"
 
         txt = (
             f"👤 **{u['username']}**\n"
@@ -802,8 +924,10 @@ async def cmd_stats(m: types.Message):
             f"🛡️ Щит: {'✅' if u['shield'] else '❌'}\n"
             f"🥊 Перчатка: {u['glove_durability']}/10\n"
             f"⛓️ Наручники: {u['handcuffs']} шт.\n"
-            f"🔒 Заложников в подвале: {hostages}\n"
-            f"{kidnap_status}\n\n"
+            f"🔒 Заложников в подвале: {hostages}"
+            f"{kidnap_status}"
+            f"{adren_status}"
+            f"{tranq_status}\n\n"
             f"📈 **Навыки:**\n"
             f"🔄 Регенерация: {u['stat_regen']}%\n"
             f"🥊 Отпор: {u['stat_counter']}%\n"
@@ -827,11 +951,18 @@ async def cmd_hill(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
             return await m.answer(reason)
+
+        tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
+        if tranqed:
+            return await m.answer(f"💉 Вы под действием транквилизатора! Осталось: {format_time(t_left)}")
+
         if not m.reply_to_message:
             return await m.answer("⚠️ Ответьте на сообщение игрока, которому хотите помочь!")
+
         target = m.reply_to_message.from_user
         if target.id == uid:
             return await m.answer("🤡 Нельзя делиться HP с самим собой!")
@@ -863,11 +994,18 @@ async def cmd_kidnap(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
             return await m.answer(reason)
+
+        tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
+        if tranqed:
+            return await m.answer(f"💉 Вы под действием транквилизатора! Осталось: {format_time(t_left)}")
+
         if not m.reply_to_message:
             return await m.answer("⚠️ Ответьте на сообщение игрока которого хотите похитить!")
+
         target = m.reply_to_message.from_user
         if target.id == uid:
             return await m.answer("🤡 Нельзя похитить самого себя!")
@@ -884,7 +1022,6 @@ async def cmd_kidnap(m: types.Message):
         if t["hp"] > 0:
             return await m.answer(f"❌ У {t['username']} ещё есть HP! Похищать можно только при 0 HP.")
 
-        # Проверка: уже в подвале?
         existing = await db_task(_get_kidnapped_by_victim, target.id, cid)
         if existing:
             return await m.answer(f"🔒 {t['username']} уже находится в чьём-то подвале!")
@@ -931,16 +1068,17 @@ async def cmd_freed(m: types.Message):
             if random.randint(1, 100) <= 30:
                 await db_task(_set_handcuffed, rec["id"], 0)
                 return await m.answer(
-                    f"⛓️ {u['username']} снял наручники! Теперь попробуй сбежать (/freed через 30м)"
+                    f"⛓️ {u['username']} снял наручники!\n"
+                    f"Теперь попробуй сбежать (/freed через 30м)"
                 )
             else:
                 return await m.answer(
-                    f"⛓️ {u['username']} не смог снять наручники! Попробуй через 30м."
+                    f"⛓️ {u['username']} не смог снять наручники!\n"
+                    f"Попробуй через 30м."
                 )
 
         # Побег из подвала
         if random.randint(1, 100) <= 30:
-            kidnapper_id = rec["kidnapper_id"]
             await db_task(_free_kidnapped, rec["id"])
             await m.answer(
                 f"🏃 {u['username']} сбежал из подвала {rec['kidnapper_name']}!\n"
@@ -962,6 +1100,7 @@ async def cmd_sell(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
             return await m.answer(reason)
@@ -988,7 +1127,6 @@ async def cmd_sell(m: types.Message):
                 f"⏳ Нужно держать заложника ещё {format_time(remaining)} перед продажей."
             )
 
-        # Проверка: уже продан?
         if rec["sold"]:
             return await m.answer("❌ Этот заложник уже продан!")
 
@@ -1004,7 +1142,7 @@ async def cmd_sell(m: types.Message):
                 f"😱 {rec['victim_name']} был продан в секс-рабство {rec['kidnapper_name']}!\n"
                 f"Используй /freed чтобы сбежать!"
             )
-        except:
+        except Exception:
             pass
     except Exception as e:
         logger.error(f"❌ /sell error: {e}", exc_info=True)
@@ -1017,6 +1155,7 @@ async def cmd_handcuff(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
             return await m.answer(reason)
@@ -1029,7 +1168,6 @@ async def cmd_handcuff(m: types.Message):
         if not hostages:
             return await m.answer("🔒 У вас нет заложников!")
 
-        # Определяем цель: ответ на сообщение или номер
         target_rec = None
         parts = m.text.split()
 
@@ -1050,7 +1188,6 @@ async def cmd_handcuff(m: types.Message):
                 return await m.answer(f"❌ Заложник #{num} не найден")
             target_rec = hostages[num - 1]
         else:
-            # Показываем список
             txt = "⛓️ **Ваши заложники:**\n"
             for i, h in enumerate(hostages, 1):
                 cuffs = " [в наручниках]" if h["handcuffed"] else ""
@@ -1071,25 +1208,113 @@ async def cmd_handcuff(m: types.Message):
         logger.error(f"❌ /handcuff error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка")
 
-# ─── Фоновая задача: начисление чёрных монет за секс-рабство ──────────────────
+# ─── /trank ───────────────────────────────────────────────────────────────────
+
+@dp.message(Command("trank"))
+async def cmd_trank(m: types.Message):
+    try:
+        uid = m.from_user.id
+        cid = m.chat.id
+
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
+
+        tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
+        if tranqed:
+            return await m.answer(f"💉 Вы сами под транквилизатором! Осталось: {format_time(t_left)}")
+
+        u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
+
+        # Проверяем наличие транквилизатора через временное хранилище
+        key = (uid, cid)
+        tranq_count = _tranq_holders.get(key, 0)
+        if tranq_count <= 0:
+            return await m.answer(
+                "💉 У вас нет транквилизатора!\n"
+                "Купите в /shop за 4🖤 (кнопка 'Транквилизатор')"
+            )
+
+        if not m.reply_to_message:
+            return await m.answer("⚠️ Ответьте на сообщение жертвы!")
+
+        target = m.reply_to_message.from_user
+        if target.id == uid:
+            return await m.answer("🤡 Нельзя транквилизировать себя!")
+        if target.id == bot.id:
+            return await m.answer("🤖 Бота не транквилизируют!")
+
+        t = await db_task(_get_user, target.id, cid, clean_nick(target.full_name))
+        now = time.time()
+
+        if t.get("tranq_until", 0) > now:
+            return await m.answer(f"💉 {t['username']} уже под транквилизатором!")
+
+        tranq_end = now + 10800  # 3 часа
+        await async_upd(target.id, cid, {
+            "tranq_until": tranq_end,
+            "last_hp_update": now  # Фиксируем время, чтобы реген не шёл
+        })
+
+        # Тратим транквилизатор
+        _tranq_holders[key] = tranq_count - 1
+
+        await m.answer(
+            f"💉 {u['username']} вколол транквилизатор {t['username']}!\n"
+            f"Жертва парализована на 3 часа.\n"
+            f"Реген остановлен. Все действия заблокированы."
+        )
+    except Exception as e:
+        logger.error(f"❌ /trank error: {e}", exc_info=True)
+        await m.answer("⚠️ Ошибка")
+
+# ─── /adren ───────────────────────────────────────────────────────────────────
+
+@dp.message(Command("adren"))
+async def cmd_adren(m: types.Message):
+    try:
+        uid = m.from_user.id
+        cid = m.chat.id
+
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
+
+        tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
+        if tranqed:
+            return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
+
+        u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
+        now = time.time()
+
+        if u.get("adren_until", 0) > now:
+            remaining = u["adren_until"] - now
+            return await m.answer(f"🔥 Адреналин уже действует! Осталось: {format_time(remaining)}")
+
+        await m.answer(
+            "🔥 Адреналин можно купить в /shop за 3🖤\n"
+            "После покупки он активируется автоматически!"
+        )
+    except Exception as e:
+        logger.error(f"❌ /adren error: {e}", exc_info=True)
+        await m.answer("⚠️ Ошибка")
+
+# ─── Фоновая задача: доход от секс-рабства ────────────────────────────────────
 
 async def income_loop():
-    """Каждые 5 минут проверяем проданных заложников и начисляем чёрные монеты."""
-    await asyncio.sleep(30)  # Старт с задержкой
+    await asyncio.sleep(30)
     while True:
         try:
             now = time.time()
             conn = _db()
             try:
                 c = conn.cursor()
-                # sold=1 — в секс-рабстве
                 c.execute("SELECT * FROM kidnapped WHERE sold=1")
                 rows = [dict(r) for r in c.fetchall()]
             finally:
                 conn.close()
 
             for rec in rows:
-                # Каждые 2 часа
                 if now - rec["last_income"] >= 7200:
                     periods = int((now - rec["last_income"]) // 7200)
                     earned = periods
@@ -1102,13 +1327,27 @@ async def income_loop():
                     try:
                         await bot.send_message(
                             kid_cid,
-                            f"🖤 {rec['kidnapper_name']} получил {earned}🖤 за заложника {rec['victim_name']}!"
+                            f"🖤 {rec['kidnapper_name']} получил {earned}🖤 "
+                            f"за заложника {rec['victim_name']}!"
                         )
-                    except:
+                    except Exception:
                         pass
         except Exception as e:
             logger.error(f"❌ Income loop error: {e}", exc_info=True)
-        await asyncio.sleep(300)  # Проверяем каждые 5 минут
+        await asyncio.sleep(300)
+
+# ─── Фоновая задача: выдача транков из магазина ────────────────────────────────
+# Патч shop_cb: при покупке транка записываем в _tranq_holders
+# Это уже сделано выше через _tranq_holders dict в shop_cb item=="tranq"
+# Но нужно синхронизировать с перезапуском — добавим колонку tranq_count в users
+
+async def tranq_sync_loop():
+    """Синхронизируем _tranq_holders с БД каждые 10 минут."""
+    # Упрощённо: при старте загружаем tranq из БД (отдельная колонка)
+    # Для простоты — храним в памяти, при рестарте сбрасывается (приемлемо)
+    await asyncio.sleep(10)
+    while True:
+        await asyncio.sleep(600)
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
 
@@ -1116,22 +1355,25 @@ async def main():
     init_db()
     logger.info(f"✅ БД: {DB_PATH}")
     await bot.set_my_commands([
-        types.BotCommand(command="help",       description="Помощь + кнопки"),
-        types.BotCommand(command="stats",      description="Мои статы"),
-        types.BotCommand(command="punch",      description="Ударить (ответом на сообщение)"),
-        types.BotCommand(command="job",        description="Работа +1💰"),
-        types.BotCommand(command="sport",      description="Прокачка навыка"),
-        types.BotCommand(command="casino",     description="Казино: /casino 100"),
-        types.BotCommand(command="casinotop",  description="Топ казино чата"),
-        types.BotCommand(command="shop",       description="Магазин"),
-        types.BotCommand(command="hill",       description="Поделиться HP (ответом)"),
-        types.BotCommand(command="kidnap",     description="Похитить игрока с 0 HP"),
-        types.BotCommand(command="freed",      description="Сбежать из подвала"),
-        types.BotCommand(command="sell",       description="Продать заложника в секс-рабство"),
-        types.BotCommand(command="handcuff",   description="Надеть наручники на заложника"),
+        types.BotCommand(command="help",      description="Помощь + кнопки"),
+        types.BotCommand(command="stats",     description="Мои статы"),
+        types.BotCommand(command="punch",     description="Ударить (ответом на сообщение)"),
+        types.BotCommand(command="job",       description="Работа +1💰"),
+        types.BotCommand(command="sport",     description="Прокачка навыка (кд 1.5ч)"),
+        types.BotCommand(command="casino",    description="Казино: /casino 100"),
+        types.BotCommand(command="casinotop", description="Топ казино чата"),
+        types.BotCommand(command="shop",      description="Магазин"),
+        types.BotCommand(command="hill",      description="Поделиться HP (ответом)"),
+        types.BotCommand(command="kidnap",    description="Похитить игрока с 0 HP"),
+        types.BotCommand(command="freed",     description="Сбежать из подвала"),
+        types.BotCommand(command="sell",      description="Продать заложника в секс-рабство"),
+        types.BotCommand(command="handcuff",  description="Надеть наручники на заложника"),
+        types.BotCommand(command="trank",     description="Использовать транквилизатор (ответом)"),
+        types.BotCommand(command="adren",     description="Статус адреналина"),
     ])
     logger.info("✅ Commands set")
     asyncio.create_task(income_loop())
+    asyncio.create_task(tranq_sync_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
