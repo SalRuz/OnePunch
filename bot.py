@@ -703,6 +703,7 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
     now = time.time()
     regen_time = calc_regen_time(u["stat_regen"])
 
+    # ── Реген HP ──
     if u.get("tranq_until", 0) > now:
         regen_str = f"заморожен ({format_time(u['tranq_until'] - now)})"
     elif u["hp"] >= u["max_hp"]:
@@ -712,11 +713,10 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
         time_to_next = regen_time - (elapsed % regen_time)
         regen_str = f"через {format_time(time_to_next)}"
 
+    # ── Подвал / рабство ──
     hostages = await db_task(_count_hostages, uid, cid)
     slaves = await db_task(_count_slaves, uid, cid)
     kidnap_rec = await db_task(_get_kidnapped_by_victim, uid, cid)
-
-    # Список заложников в подвале
     hostage_list = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
     slave_list = await db_task(_get_slaves_by_owner, uid, cid)
 
@@ -731,42 +731,104 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
             cuffs = " (в наручниках)" if kidnap_rec["handcuffed"] else ""
             kidnap_str = f"🔒 В подвале у: {kname}{cuffs}"
 
+    # ── Активные эффекты ──
     effects_lines = []
     if u.get("adren_until", 0) > now:
         effects_lines.append(f"🔥 Адреналин: {format_time(u['adren_until'] - now)}")
     if u.get("tranq_until", 0) > now:
         effects_lines.append(f"💉 Транквилизатор: {format_time(u['tranq_until'] - now)}")
+    if u.get("jailed_until", 0) > now:
+        effects_lines.append(f"🚔 За решёткой: {format_time(u['jailed_until'] - now)}")
+    if u.get("jammer_until", 0) > now:
+        effects_lines.append(f"📡 Глушилка: {format_time(u['jammer_until'] - now)}")
 
+    # ── Предметы ──
     shield_str = "есть" if u["shield"] else "нет"
     glove_str = f"{u['glove_durability']}/10" if u["glove_durability"] > 0 else "нет"
+    house_str = f"{u.get('house_hp', 0)}/30" if u.get("house_hp", 0) > 0 else "нет"
+
+    # ── Работа ──
+    job_cd_val = calc_job_cooldown(u.get("stat_success", 0), u.get("debuff_crisis", 0))
+    job_elapsed = max(0, now - (u["last_job"] or 0))
+    job_cd_left = job_cd_val - job_elapsed
+    if job_cd_left > 0:
+        job_str = f"через {format_time(job_cd_left)}"
+    else:
+        job_str = "доступна!"
+    salary_now = calc_job_salary(u.get("job_count", 0))
+
+    # ── Доход от рабов (как клиент) ──
+    slave_income_str = ""
+    if slave_list:
+        # Берём ближайшего раба у которого last_income минимальный (он первым принесёт доход)
+        earliest = min(slave_list, key=lambda x: x["last_income"])
+        elapsed_income = now - earliest["last_income"]
+        # Каждый раб приносит 0.5🖤 каждые 7200с (2ч)
+        # Период накопления целой монеты — 2 периода = 14400с
+        next_tick = 7200 - (elapsed_income % 7200)
+        slave_income_str = (
+            f"\n   ⏳ Следующий доход за рабов: через {format_time(next_tick)} "
+            f"(период: {format_time(7200)})"
+        )
+
+    # ── Доход от рабства (как продавец) ──
+    seller_income_str = ""
+    conn_s = _db()
+    try:
+        cur_s = conn_s.cursor()
+        cur_s.execute(
+            "SELECT * FROM kidnapped WHERE kidnapper_id=? AND chat_id=? AND sold=1 ORDER BY last_income ASC LIMIT 1",
+            (uid, cid)
+        )
+        sold_row = cur_s.fetchone()
+    finally:
+        conn_s.close()
+    if sold_row:
+        sold_row = dict(sold_row)
+        elapsed_sold = now - sold_row["last_income"]
+        next_tick_sold = 7200 - (elapsed_sold % 7200)
+        seller_income_str = (
+            f"\n   ⏳ Следующий доход (продавец): через {format_time(next_tick_sold)} "
+            f"(период: {format_time(7200)})"
+        )
 
     lines = [
         f"👤 Игрок: {display_name}",
-        f"",
+        "",
         f"❤️  HP: {u['hp']}/{u['max_hp']} ({regen_str})",
         f"⏱  Реген 1 HP: {format_time(regen_time)}",
+        "",
         f"💰  Монеты: {u['money']}",
         f"🖤  Чёрные монеты: {u['black_money']}",
+    ]
+
+    if slave_income_str:
+        lines.append(f"   (как клиент){slave_income_str}")
+    if seller_income_str:
+        lines.append(f"   (как продавец){seller_income_str}")
+
+    lines += [
+        "",
         f"🛡️  Щит: {shield_str}",
+        f"🏠  Дом: {house_str}",
         f"🥊  Перчатка: {glove_str}",
         f"⛓️  Наручники: {u['handcuffs']} шт.",
         f"💉  Транки в запасе: {u.get('tranq_stock', 0)} шт.",
+        "",
         f"🔒  Заложников в подвале: {hostages}",
         f"😈  Рабов: {slaves}",
     ]
 
-    # Список заложников в подвале
+    # Список заложников
     if hostage_list:
-        lines.append("")
-        lines.append("🔒 В подвале:")
+        lines.append("   В подвале:")
         for h in hostage_list:
             cuffs = " ⛓️" if h["handcuffed"] else ""
             lines.append(f"   • {h['victim_name']}{cuffs}")
 
     # Список рабов
     if slave_list:
-        lines.append("")
-        lines.append("😈 Рабы:")
+        lines.append("   Рабы:")
         for s in slave_list:
             cuffs = " ⛓️" if s["handcuffed"] else ""
             lines.append(f"   • {s['victim_name']}{cuffs}")
@@ -775,27 +837,32 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
         lines.append("")
         lines.append(kidnap_str)
 
-    if effects_lines:
-        lines.append("")
-        lines.append("✨ Активные эффекты:")
-        for ef in effects_lines:
-            lines.append(f"   {ef}")
-
     lines += [
+        "",
+        f"💼  Работ: {u.get('job_count', 0)} | Зарплата: {salary_now}💰",
+        f"⏳  КД работы: {job_str} (полный: {format_time(job_cd_val)})",
         "",
         "📈 Навыки:",
         f"   🔄 Регенерация:  {u['stat_regen']}%",
         f"   🥊 Отпор:        {u['stat_counter']}%",
         f"   🛡️ Блок:         {u['stat_block']}%",
         f"   🥋 Джиу-джитсу: {u['stat_jiu']}%",
+        f"   ⭐ Успех:        {u.get('stat_success', 0)}%",
         "",
         "📉 Дебаффы:",
         f"   🦠 Слабость: {u['debuff_weak']}%",
         f"   😨 Страх:    {u['debuff_fear']}%",
         f"   💸 Откуп:    {u['debuff_payoff']}%",
+        f"   📉 Кризис:   {u.get('debuff_crisis', 0)}%",
         "",
         f"🎰 Выиграно в казино: {u['casino_won']}💰",
     ]
+
+    if effects_lines:
+        lines.append("")
+        lines.append("✨ Активные эффекты:")
+        for ef in effects_lines:
+            lines.append(f"   {ef}")
 
     await m.answer("\n".join(lines))
 
@@ -1079,7 +1146,9 @@ async def cmd_help(m: types.Message):
             "🏆 /casinotop — топ чата\n"
             "📊 /stats — мои статы (или ответом — чужие)\n"
             "🏪 /shop — магазин\n\n"
-            "❤️ /hill (ответ) — передать 1 HP любому игроку (нужно >1 HP)\n\n"
+            "❤️ /hill (ответ) — передать 1 HP любому игроку (нужно >1 HP)\n"
+            "💱 /give <N> coin — передать N💰 (ответом на игрока)\n"
+            "💱 /give <N> black — передать N🖤 (ответом на игрока)\n\n"
             "🔒 Подвал и рабство:\n"
             "   /kidnap (ответ) — похитить игрока с 0 HP\n"
             "   /freed — сбежать (30% шанс, кд 30м)\n"
@@ -1096,12 +1165,20 @@ async def cmd_help(m: types.Message):
             "   /adren — статус адреналина (купить 3🖤): КД удара 15м на 3ч\n\n"
             "⚠️ При 0 HP: только /shop и реген\n"
             "🌍 У каждого чата свой мир\n\n"
+            "🖤 Доход от рабства:\n"
+            "   Клиент и продавец получают по 0.5🖤 каждые 2ч\n"
+            "   (за каждого раба пока тот в рабстве)\n\n"
             "🖤 Чёрные монеты = 10💰\n"
             "🥊 Перчатка (3🖤) — x2 урон, 10 ударов\n"
             "⛓️ Наручники (1🖤) — сковать заложника/раба\n"
             "💉 Транквилизатор (4🖤) — паралич 3ч\n"
-            "🔥 Адреналин (3🖤) — КД удара 15м на 3ч\n\n"
-            "⚡ Если похитителя самого похитят — его заложники и рабы перейдут новому хозяину!",
+            "🔥 Адреналин (3🖤) — КД удара 15м на 3ч\n"
+            "📡 Глушилка (3🖤) — рабам нужно 10 сапёров для /911 (3 дня)\n"
+            "🏠 Дом (100💰+) — 30 уд. защиты, цена растёт на 100💰\n\n"
+            "⚡ Если похитителя самого похитят — его заложники и рабы перейдут новому хозяину!\n"
+            "⭐ Успех — снижает КД работы (до 10м при 100%)\n"
+            "📉 Кризис — увеличивает КД работы (до 3ч при 100%)\n"
+            "   (кризис начисляется только при Успехе = 0%)",
             reply_markup=kb.as_markup()
         )
     except Exception as e:
@@ -1916,6 +1993,98 @@ async def cmd_adren(m: types.Message):
         logger.error(f"/adren error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка")
 
+# ─── /give ────────────────────────────────────────────────────────────────────
+
+@dp.message(Command("give"))
+async def cmd_give(m: types.Message):
+    try:
+        uid = m.from_user.id
+        cid = m.chat.id
+        name = clean_nick(m.from_user.full_name)
+
+        await db_task(_get_user, uid, cid, name)
+        await db_task(_upd_username, uid, cid, name)
+
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
+
+        tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
+        if tranqed:
+            return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
+
+        if not m.reply_to_message or m.reply_to_message.from_user.id == bot.id:
+            return await m.answer(
+                "⚠️ Ответьте на сообщение игрока!\n"
+                "Использование: /give <сумма> <coin|black>\n"
+                "Пример: /give 10 coin  или  /give 2 black"
+            )
+
+        parts = m.text.split()
+        if len(parts) < 3:
+            return await m.answer(
+                "⚠️ Использование: /give <сумма> <coin|black>\n"
+                "Пример: /give 10 coin  или  /give 2 black"
+            )
+
+        try:
+            amount = int(parts[1])
+        except ValueError:
+            return await m.answer("❌ Сумма должна быть целым числом!")
+
+        if amount <= 0:
+            return await m.answer("❌ Сумма должна быть больше 0!")
+
+        currency = parts[2].lower()
+        if currency not in ("coin", "black", "coins", "blacks"):
+            return await m.answer("❌ Валюта: coin (монеты) или black (чёрные монеты)")
+
+        is_black = currency in ("black", "blacks")
+
+        target = m.reply_to_message.from_user
+        if target.id == uid:
+            return await m.answer("🤡 Нельзя передавать монеты самому себе!")
+
+        tname = clean_nick(target.full_name)
+        await db_task(_get_user, target.id, cid, tname)
+        await db_task(_upd_username, target.id, cid, tname)
+
+        u = await db_task(_get_user, uid, cid, name)
+        t = await db_task(_get_user, target.id, cid, tname)
+        target_name = t.get("username") or tname
+        sender_name = u.get("username") or name
+
+        if is_black:
+            if u["black_money"] < amount:
+                return await m.answer(
+                    f"🖤 Недостаточно чёрных монет!\n"
+                    f"У вас: {u['black_money']}🖤, нужно: {amount}🖤"
+                )
+            await async_upd(uid, cid, {"black_money": u["black_money"] - amount})
+            await async_upd(target.id, cid, {"black_money": t["black_money"] + amount})
+            await m.answer(
+                f"🖤 {sender_name} передал {amount}🖤 игроку {target_name}!\n"
+                f"{sender_name}: {u['black_money'] - amount}🖤\n"
+                f"{target_name}: {t['black_money'] + amount}🖤"
+            )
+        else:
+            if u["money"] < amount:
+                return await m.answer(
+                    f"💰 Недостаточно монет!\n"
+                    f"У вас: {u['money']}💰, нужно: {amount}💰"
+                )
+            await async_upd(uid, cid, {"money": u["money"] - amount})
+            await async_upd(target.id, cid, {"money": t["money"] + amount})
+            await m.answer(
+                f"💰 {sender_name} передал {amount}💰 игроку {target_name}!\n"
+                f"{sender_name}: {u['money'] - amount}💰\n"
+                f"{target_name}: {t['money'] + amount}💰"
+            )
+
+    except Exception as e:
+        logger.error(f"/give error: {e}", exc_info=True)
+        await m.answer("⚠️ Ошибка передачи монет")
+
 # ─── /911 ─────────────────────────────────────────────────────────────────────
 
 @dp.message(Command("911"))
@@ -2157,7 +2326,6 @@ async def income_loop():
             conn = _db()
             try:
                 c = conn.cursor()
-                # Только активные рабы (sold=1)
                 c.execute("SELECT * FROM kidnapped WHERE sold=1")
                 rows = [dict(r) for r in c.fetchall()]
             finally:
@@ -2166,22 +2334,53 @@ async def income_loop():
             for rec in rows:
                 if now - rec["last_income"] >= 7200:
                     periods = int((now - rec["last_income"]) // 7200)
-                    # Доход идёт slave_owner_id
-                    owner_id = rec.get("slave_owner_id", 0)
-                    owner_name = rec.get("slave_owner_name", "")
-                    owner_cid = rec["chat_id"]
+                    cid = rec["chat_id"]
 
-                    if owner_id and owner_id != 0:
-                        kd = _get_user(owner_id, owner_cid, owner_name)
-                        _upd_user(owner_id, owner_cid, {"black_money": kd["black_money"] + periods})
-                        _upd_kidnapped_income(rec["id"], rec["last_income"] + periods * 7200)
+                    # ── Клиент получает 0.5🖤 за период ──
+                    # Накапливаем через дробные периоды: каждые 2 периода = 1🖤
+                    client_id = rec.get("slave_owner_id", 0)
+                    client_name = rec.get("slave_owner_name", "")
+                    seller_id = rec.get("kidnapper_id", 0)
+                    seller_name = rec.get("kidnapper_name", "")
+
+                    # Считаем целые монеты: за N периодов каждый получает floor(N/2)
+                    # и +1 если N нечётное и это "чётный" тик (решаем через total_periods)
+                    # Простое решение: floor(periods/2) монет каждому, остаток копится
+                    client_black = periods // 2
+                    seller_black = periods // 2
+                    # Если periods нечётное — добавляем 1 монету случайному
+                    if periods % 2 == 1:
+                        if random.randint(0, 1) == 0:
+                            client_black += 1
+                        else:
+                            seller_black += 1
+
+                    if client_id and client_black > 0:
+                        kd = _get_user(client_id, cid, client_name)
+                        _upd_user(client_id, cid, {"black_money": kd["black_money"] + client_black})
                         try:
                             await bot.send_message(
-                                owner_cid,
-                                f"🖤 {owner_name} получил {periods}🖤 за раба {rec['victim_name']}!"
+                                cid,
+                                f"🖤 {client_name} получил {client_black}🖤 "
+                                f"за раба {rec['victim_name']}! (клиент)"
                             )
                         except Exception:
                             pass
+
+                    if seller_id and seller_black > 0:
+                        sd = _get_user(seller_id, cid, seller_name)
+                        _upd_user(seller_id, cid, {"black_money": sd["black_money"] + seller_black})
+                        try:
+                            await bot.send_message(
+                                cid,
+                                f"🖤 {seller_name} получил {seller_black}🖤 "
+                                f"за раба {rec['victim_name']}! (продавец)"
+                            )
+                        except Exception:
+                            pass
+
+                    _upd_kidnapped_income(rec["id"], rec["last_income"] + periods * 7200)
+
         except Exception as e:
             logger.error(f"Income loop error: {e}", exc_info=True)
         await asyncio.sleep(300)
@@ -2207,6 +2406,7 @@ async def main():
         types.BotCommand(command="handcuff",  description="Надеть наручники на заложника/раба"),
         types.BotCommand(command="trank",     description="Транквилизатор (ответом)"),
         types.BotCommand(command="adren",     description="Статус адреналина"),
+        types.BotCommand(command="give",      description="Передать монеты: /give 10 coin или /give 2 black"),
         types.BotCommand(command="911",       description="Вызвать копов (только в рабстве)"),
     ])
     asyncio.create_task(income_loop())
