@@ -131,18 +131,44 @@ POOP_TEXTS = [
     "😵 Адреналин ударил в голову, а результат вышел из {nick}...",
 ]
 
-POSITIVE_STATS = ["stat_regen", "stat_counter", "stat_block", "stat_jiu"]
-ALL_STATS = POSITIVE_STATS + ["debuff_weak", "debuff_fear", "debuff_payoff"]
 STAT_NAMES = {
     "stat_regen": "Регенерация", "stat_counter": "Отпор",
     "stat_block": "Блок", "stat_jiu": "Джиу-джитсу",
-    "debuff_weak": "Слабость", "debuff_fear": "Страх", "debuff_payoff": "Откуп",
+    "stat_success": "Успех",
+    "debuff_weak": "Слабость", "debuff_fear": "Страх",
+    "debuff_payoff": "Откуп", "debuff_crisis": "Кризис",
 }
+
+POSITIVE_STATS = ["stat_regen", "stat_counter", "stat_block", "stat_jiu", "stat_success"]
+ALL_STATS = POSITIVE_STATS + ["debuff_weak", "debuff_fear", "debuff_payoff", "debuff_crisis"]
+
+BASE_JOB_COOLDOWN = 3600  # базовый кд работы 1 час
+
+def calc_job_cooldown(success: int, crisis: int) -> int:
+    """Считает актуальный кд работы с учётом успеха и кризиса."""
+    base = BASE_JOB_COOLDOWN
+    # Успех снижает кд: при 100% успеха кд = 10 минут (600с)
+    # Линейно: base - (base - 600) * success/100
+    after_success = base - int((base - 600) * success / 100)
+    # Кризис увеличивает кд: при 100% кризиса кд = 3 часа (10800с)
+    # Линейно добавляет до +7200с
+    after_crisis = after_success + int(7200 * crisis / 100)
+    return max(600, after_crisis)
+
+def calc_job_salary(job_count: int) -> float:
+    """Считает зарплату по количеству отработанных раз."""
+    if job_count < 50:
+        return 1.0
+    elif job_count < 150:   # 50+100
+        return 1.5
+    else:
+        # каждые 100 после 150 дают +0.5
+        extra = (job_count - 150) // 100
+        return 2.0 + extra * 0.5
 
 COOLDOWNS = {
     "punch": 1800,
     "punch_adren": 900,
-    "job": 3600,
     "sport": 5400,
     "freed": 1800,
 }
@@ -287,8 +313,13 @@ COL_DEFAULTS = {
     "debuff_weak": 0, "debuff_fear": 0, "debuff_payoff": 0,
     "casino_won": 0, "glove_durability": 0, "handcuffs": 0,
     "tranq_until": 0.0, "adren_until": 0.0, "tranq_stock": 0,
-    "jailed_until": 0.0,
-    "last_911": 0.0,
+    "jailed_until": 0.0, "last_911": 0.0,
+    "jammer_until": 0.0,
+    "stat_success": 0,
+    "debuff_crisis": 0,
+    "job_count": 0,
+    "house_hp": 0,
+    "house_bought": 0,
 }
 COL_NAMES = list(COL_DEFAULTS.keys())
 
@@ -360,6 +391,12 @@ def init_db():
             "tranq_stock": "INTEGER DEFAULT 0",
             "jailed_until": "REAL DEFAULT 0",
             "last_911": "REAL DEFAULT 0",
+            "jammer_until": "REAL DEFAULT 0",
+            "stat_success": "INTEGER DEFAULT 0",
+            "debuff_crisis": "INTEGER DEFAULT 0",
+            "job_count": "INTEGER DEFAULT 0",
+            "house_hp": "INTEGER DEFAULT 0",
+            "house_bought": "INTEGER DEFAULT 0",
         }
         for col, typedef in migrations_users.items():
             if col not in existing:
@@ -969,6 +1006,39 @@ async def shop_cb(call: types.CallbackQuery):
                 f"🔥 {u['username']} выпил адреналин!\nКД удара снижен до 15 минут на 3 часа."
             )
 
+        elif item == "jammer":
+            if u["black_money"] < 3:
+                return await call.answer("Нужно 3🖤", show_alert=True)
+            jammer_end = max(u.get("jammer_until", 0), now) + 259200  # +3 дня
+            await async_upd(uid, cid, {
+                "black_money": u["black_money"] - 3,
+                "jammer_until": jammer_end,
+            })
+            await call.answer("📡 Глушилка активирована на 3 дня!", show_alert=True)
+            await call.message.edit_text(
+                f"📡 {u['username']} купил глушилку!\n"
+                f"Рабам придётся решить 10 сапёров вместо 3 для вызова копов.\n"
+                f"Действует 3 дня."
+            )
+
+        elif item == "house":
+            price = 100 + u.get("house_bought", 0) * 100
+            if u["money"] < price:
+                return await call.answer(f"Нужно {price}💰", show_alert=True)
+            new_house_hp = min(30, u.get("house_hp", 0) + 30)
+            await async_upd(uid, cid, {
+                "money": u["money"] - price,
+                "house_hp": new_house_hp,
+                "house_bought": u.get("house_bought", 0) + 1,
+            })
+            next_price = price + 100
+            await call.answer(f"🏠 Дом куплен! Прочность: {new_house_hp}/30", show_alert=True)
+            await call.message.edit_text(
+                f"🏠 {u['username']} купил дом!\n"
+                f"Прочность: {new_house_hp}/30 ударов.\n"
+                f"Следующая покупка: {next_price}💰"
+            )
+
     except Exception as e:
         logger.error(f"Shop error: {e}", exc_info=True)
         await call.answer("⚠️ Ошибка магазина", show_alert=True)
@@ -1143,13 +1213,43 @@ async def cmd_job(m: types.Message):
             return await m.answer("💀 0 HP! Нельзя работать")
 
         now = time.time()
-        cd = COOLDOWNS["job"] - (now - (u["last_job"] or 0))
+        job_cd = calc_job_cooldown(u.get("stat_success", 0), u.get("debuff_crisis", 0))
+        cd = job_cd - (now - (u["last_job"] or 0))
         if cd > 0:
             return await m.answer(f"⏳ Работа доступна через {format_time(cd)}")
 
-        new_money = u["money"] + 1
-        await async_upd(uid, cid, {"money": new_money, "last_job": now})
-        await m.answer(f"💼 {u['username']} заработал +1💰\nБаланс: {new_money}💰")
+        salary = calc_job_salary(u.get("job_count", 0))
+        new_job_count = u.get("job_count", 0) + 1
+
+        # Добавляем деньги (дробные копим через money как float? нет — храним *2 или просто int)
+        # Используем целые: 1.5 → каждые 2 работы +3, то есть накапливаем через black_money нет
+        # Проще: храним монеты как int*10 внутри, но это сломает магазин.
+        # Решение: salary rounded, каждые 2 работы при 1.5 дают +1 и +2 поочерёдно
+        # Простейший способ: floor, но при 1.5 каждая 2-я работа даёт доп монету
+        base_earn = int(salary)
+        bonus = 1 if (new_job_count % 2 == 0 and salary != int(salary)) else 0
+        earned = base_earn + bonus
+
+        new_money = u["money"] + earned
+        await async_upd(uid, cid, {
+            "money": new_money,
+            "last_job": now,
+            "job_count": new_job_count,
+        })
+
+        # Сообщение о повышении зарплаты
+        promo_msg = ""
+        old_salary = calc_job_salary(u.get("job_count", 0))
+        new_salary = calc_job_salary(new_job_count)
+        if new_salary > old_salary:
+            promo_msg = f"\n🎉 Повышение! Новая зарплата: {new_salary}💰/раз"
+
+        await m.answer(
+            f"💼 {u['username']} заработал +{earned}💰\n"
+            f"Баланс: {new_money}💰 | Работ всего: {new_job_count}\n"
+            f"Зарплата: {calc_job_salary(new_job_count)}💰"
+            + promo_msg
+        )
     except Exception as e:
         logger.error(f"/job error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка работы")
@@ -1188,9 +1288,21 @@ async def cmd_sport(m: types.Message):
         nv = min(100, old_val + 1)
         await async_upd(uid, cid, {st: nv, "last_sport": now})
 
+        crisis_msg = ""
+        if st == "stat_success" and u.get("debuff_crisis", 0) > 0:
+            # Рост успеха немного снижает кризис
+            new_crisis = max(0, u["debuff_crisis"] - 1)
+            await async_upd(uid, cid, {"debuff_crisis": new_crisis})
+            crisis_msg = f"\n📉 Кризис снизился: {u['debuff_crisis']}% → {new_crisis}%"
+
+        job_cd_new = calc_job_cooldown(nv if st == "stat_success" else u.get("stat_success", 0),
+                                       u.get("debuff_crisis", 0))
         msg = f"🏋️ {u['username']} прокачал {STAT_NAMES[st]}: {old_val}% → {nv}%"
         if st == "stat_regen":
             msg += f"\n⏱ Время регена: {format_time(calc_regen_time(nv))}/HP"
+        if st == "stat_success":
+            msg += f"\n⏱ КД работы теперь: {format_time(job_cd_new)}"
+        msg += crisis_msg
         await m.answer(msg)
     except Exception as e:
         logger.error(f"/sport error: {e}", exc_info=True)
@@ -1201,22 +1313,32 @@ async def cmd_sport(m: types.Message):
 @dp.message(Command("shop"))
 async def cmd_shop(m: types.Message):
     try:
+        uid = m.from_user.id
+        cid = m.chat.id
+        name = clean_nick(m.from_user.full_name)
+        u = await db_task(_get_user, uid, cid, name)
+        price_house = 100 + u.get("house_bought", 0) * 100
+
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Сброс кд удара — 3💰", callback_data="shop:skip")],
             [InlineKeyboardButton(text="❤️ +1 жизнь — 5💰", callback_data="shop:life")],
             [InlineKeyboardButton(text="🛡️ Щит — 4💰", callback_data="shop:shield")],
+            [InlineKeyboardButton(text=f"🏠 Дом (30 уд.) — {price_house}💰", callback_data="shop:house")],
             [InlineKeyboardButton(text="💱 Разменять 1🖤 → 10💰", callback_data="shop:exchange_black")],
             [InlineKeyboardButton(text="🥊 Перчатка x2 урон — 3🖤", callback_data="shop:glove")],
             [InlineKeyboardButton(text="⛓️ Наручники — 1🖤", callback_data="shop:handcuff")],
             [InlineKeyboardButton(text="💉 Транквилизатор — 4🖤", callback_data="shop:tranq")],
             [InlineKeyboardButton(text="🔥 Адреналин (КД 15м) — 3🖤", callback_data="shop:adren")],
+            [InlineKeyboardButton(text="📡 Глушилка (10 сап., 3д) — 3🖤", callback_data="shop:jammer")],
         ])
         await m.answer(
-            "🏪 Магазин (доступен при 0 HP)\n\n"
-            "🥊 Перчатка — x2 урон, 10 ударов, только 1 шт.\n"
-            "⛓️ Наручники — сковать заложника/раба (неограниченно)\n"
-            "💉 Транквилизатор — /trank: паралич 3ч + стоп регена\n"
-            "🔥 Адреналин — КД удара 15м вместо 30м на 3ч\n"
+            "🏪 Магазин\n\n"
+            "🏠 Дом — защита 30 ударов (щит→дом по приоритету)\n"
+            "🥊 Перчатка — x2 урон, 10 ударов\n"
+            "⛓️ Наручники — сковать заложника/раба\n"
+            "💉 Транквилизатор — /trank: паралич 3ч\n"
+            "🔥 Адреналин — КД удара 15м на 3ч\n"
+            "📡 Глушилка — рабам нужно 10 сапёров для /911 (3 дня)\n"
             "💱 1🖤 = 10💰",
             reply_markup=kb
         )
@@ -1812,26 +1934,49 @@ async def cmd_911(m: types.Message):
         if not rec or rec.get("sold") != 1:
             return await m.answer("🚔 /911 можно вызвать только находясь в рабстве!")
 
+        # Наручники — нельзя использовать /911
+        if rec.get("handcuffed", 0):
+            return await m.answer("⛓️ В наручниках нельзя вызвать копов! Сначала сними наручники (/freed).")
+
         now = time.time()
         last = u.get("last_911", 0)
         cd = 18000 - (now - last)
         if cd > 0:
             return await m.answer(f"🚔 /911 доступен через {format_time(cd)}")
 
-        # Начинаем сессию сапёра
-        board = _make_board(SAPPER_ROWS, SAPPER_COLS, SAPPER_MINES[0])
+        # Проверяем глушилку у клиента
+        client_id = rec.get("slave_owner_id", 0)
+        client_cid = cid
+        rounds_needed = 3
+        jammer_active = False
+        if client_id:
+            client_data = await db_task(_get_user, client_id, client_cid, "")
+            if client_data.get("jammer_until", 0) > now:
+                rounds_needed = 10
+                jammer_active = True
+
+        # Генерируем мины для всех раундов
+        mines_list = []
+        for i in range(rounds_needed):
+            # Постепенно увеличиваем количество мин
+            base_mines = 5 + (i % 3) * 2  # 5,7,9,5,7,9...
+            mines_list.append(min(base_mines, SAPPER_ROWS * SAPPER_COLS - 5))
+
+        board = _make_board(SAPPER_ROWS, SAPPER_COLS, mines_list[0])
         revealed = [[False] * SAPPER_COLS for _ in range(SAPPER_ROWS)]
         session = {
             "chat_id": cid,
             "round": 1,
+            "rounds_total": rounds_needed,
+            "mines_list": mines_list,
             "board": board,
             "revealed": revealed,
             "rows": SAPPER_ROWS,
             "cols": SAPPER_COLS,
-            "mines": SAPPER_MINES[0],
+            "mines": mines_list[0],
             "msg_id": None,
             "slave_rec_id": rec["id"],
-            "client_id": rec.get("slave_owner_id", 0),
+            "client_id": client_id,
             "client_name": rec.get("slave_owner_name", "?"),
             "seller_id": rec.get("kidnapper_id", 0),
             "seller_name": rec.get("kidnapper_name", "?"),
@@ -1840,12 +1985,15 @@ async def cmd_911(m: types.Message):
 
         await async_upd(uid, cid, {"last_911": now})
 
+        jammer_note = "\n📡 Клиент использует глушилку — нужно пройти 10 сапёров!" if jammer_active else ""
+
         kb = _sapper_keyboard(session)
         sent = await m.answer(
             f"🚔 {display} вызывает копов!\n\n"
-            f"Реши 3 сапёра подряд чтобы освободиться и посадить клиента!\n"
-            f"❌ Если проиграешь хоть один — вызов провалится.\n\n"
-            f"📋 Раунд 1/3 | Мин: {SAPPER_MINES[0]}\n"
+            f"Реши {rounds_needed} сапёра(ов) подряд чтобы освободиться!\n"
+            f"❌ Если проиграешь хоть один — вызов провалится.\n"
+            f"{jammer_note}\n\n"
+            f"📋 Раунд 1/{rounds_needed} | Мин: {mines_list[0]}\n"
             f"Открой все безопасные клетки!",
             reply_markup=kb
         )
@@ -1917,21 +2065,24 @@ async def sapper_cb(call: types.CallbackQuery):
         if _all_safe_revealed(session):
             round_num = session["round"]
 
-            if round_num < 3:
+            if round_num < session.get("rounds_total", 3):
                 # Следующий раунд
                 next_round = round_num + 1
-                new_board = _make_board(SAPPER_ROWS, SAPPER_COLS, SAPPER_MINES[next_round - 1])
+                mines_list = session.get("mines_list", SAPPER_MINES)
+                next_mines = mines_list[next_round - 1] if next_round - 1 < len(mines_list) else 9
+                new_board = _make_board(SAPPER_ROWS, SAPPER_COLS, next_mines)
                 new_revealed = [[False] * SAPPER_COLS for _ in range(SAPPER_ROWS)]
                 session["round"] = next_round
                 session["board"] = new_board
                 session["revealed"] = new_revealed
-                session["mines"] = SAPPER_MINES[next_round - 1]
+                session["mines"] = next_mines
+                rounds_total = session.get("rounds_total", 3)
 
                 await call.answer(f"✅ Раунд {round_num} пройден! Следующий раунд!", show_alert=True)
                 kb = _sapper_keyboard(session)
                 try:
                     await call.message.edit_text(
-                        f"🚔 Раунд {next_round}/3 | Мин: {SAPPER_MINES[next_round - 1]}\n"
+                        f"🚔 Раунд {next_round}/{rounds_total} | Мин: {next_mines}\n"
                         f"Продолжай! Открой все безопасные клетки!",
                         reply_markup=kb
                     )
