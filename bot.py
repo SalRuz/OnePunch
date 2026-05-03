@@ -10,10 +10,8 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# 🔑 Токен бота
 BOT_TOKEN = "8183582932:AAEIas0VlMxWSDvOLap_y6cTsZ9yqicmhYc"
 
-# 📂 Настройки
 DATA_DIR = Path("/app/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "bot.db"
@@ -23,7 +21,6 @@ dp = Dispatcher()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# 📜 Тексты
 PUNCH_TEXTS = [
     "{attacker} жестко дал пощёчину {victim}", "{attacker} врезал {victim} кулаком в челюсть",
     "{attacker} ударил {victim} под дых", "{attacker} съездил {victim} по ушам",
@@ -45,33 +42,6 @@ PUNCH_TEXTS = [
     "{attacker} ударил {victim} ногой", "{attacker} ударил {victim} рукой",
     "{attacker} ударил {victim} кулаком", "{attacker} ударил {victim} по голове",
     "{attacker} ударил {victim} по лицу", "{attacker} ударил {victim} по телу",
-    "{attacker} ударил {victim} по рукам", "{attacker} ударил {victim} по ногам",
-    "{attacker} ударил {victim} по спине", "{attacker} ударил {victim} по груди",
-    "{attacker} ударил {victim} по животу", "{attacker} ударил {victim} по боку",
-    "{attacker} ударил {victim} по шее", "{attacker} ударил {victim} по подбородку",
-    "{attacker} ударил {victim} по скуле", "{attacker} ударил {victim} по виску",
-    "{attacker} ударил {victim} по лбу", "{attacker} ударил {victim} по затылку",
-    "{attacker} ударил {victim} по уху", "{attacker} ударил {victim} по носу",
-    "{attacker} ударил {victim} по губе", "{attacker} ударил {victim} по зубам",
-    "{attacker} ударил {victim} по плечу", "{attacker} ударил {victim} по предплечью",
-    "{attacker} ударил {victim} по локтю", "{attacker} ударил {victim} по запястью",
-    "{attacker} ударил {victim} по кисти", "{attacker} ударил {victim} по пальцам",
-    "{attacker} ударил {victim} по рёбрам", "{attacker} ударил {victim} по пояснице",
-    "{attacker} ударил {victim} по тазу", "{attacker} ударил {victim} по бедру",
-    "{attacker} ударил {victim} по колену", "{attacker} ударил {victim} по голени",
-    "{attacker} ударил {victim} по лодыжке", "{attacker} ударил {victim} по стопе",
-    "{attacker} ударил {victim} по пятке", "{attacker} ударил {victim} по носку",
-    "{attacker} ударил {victim} по мизинцу", "{attacker} ударил {victim} по большому пальцу",
-    "{attacker} ударил {victim} по указательному", "{attacker} ударил {victim} по среднему",
-    "{attacker} ударил {victim} по безымянному", "{attacker} ударил {victim} по ладони",
-    "{attacker} ударил {victim} по тыльной стороне", "{attacker} ударил {victim} по плечевому суставу",
-    "{attacker} ударил {victim} по ключице", "{attacker} ударил {victim} по лопатке",
-    "{attacker} ударил {victim} по позвоночнику", "{attacker} ударил {victim} по кадыку",
-    "{attacker} ударил {victim} по горлу", "{attacker} ударил {victim} по трахее",
-    "{attacker} ударил {victim} по нерву", "{attacker} ударил {victim} по мышце",
-    "{attacker} ударил {victim} по сухожилию", "{attacker} ударил {victim} по кости",
-    "{attacker} ударил {victim} по коже", "{attacker} ударил {victim} по волосам",
-    "{attacker} ударил {victim} по щекам", "{attacker} ударил {victim} по макушке"
 ]
 
 POOP_TEXTS = [
@@ -94,9 +64,27 @@ STAT_NAMES = {
     "stat_block": "Блок", "stat_jiu": "Джиу-джитсу",
     "debuff_weak": "Слабость", "debuff_fear": "Страх", "debuff_payoff": "Откуп"
 }
-COOLDOWNS = {"punch": 1800, "job": 3600, "sport": 7200}
+COOLDOWNS = {"punch": 1800, "job": 3600, "sport": 7200, "freed": 1800}
 
-# 🗄️ БД
+DEFAULT_REGEN_TIME = 3600  # 1 час на 1 HP
+
+def calc_regen_time(stat_regen: int) -> float:
+    """Время регенерации одного HP в секундах."""
+    return max(60, DEFAULT_REGEN_TIME * (1 - stat_regen / 100))
+
+def format_time(seconds: float) -> str:
+    seconds = int(seconds)
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    if h > 0:
+        return f"{h}ч {m}м {s}с"
+    elif m > 0:
+        return f"{m}м {s}с"
+    return f"{s}с"
+
+# ─── БД ───────────────────────────────────────────────────────────────────────
+
 def _db():
     conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
@@ -106,20 +94,60 @@ def init_db():
     conn = _db()
     try:
         c = conn.cursor()
+        # Основная таблица пользователей
         c.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER, chat_id INTEGER, username TEXT,
-            hp INTEGER DEFAULT 3, max_hp INTEGER DEFAULT 3, money INTEGER DEFAULT 0,
-            shield INTEGER DEFAULT 0, last_punch REAL DEFAULT 0, last_job REAL DEFAULT 0,
+            hp INTEGER DEFAULT 6, max_hp INTEGER DEFAULT 6, money INTEGER DEFAULT 0,
+            black_money INTEGER DEFAULT 0,
+            shield INTEGER DEFAULT 0,
+            last_punch REAL DEFAULT 0, last_job REAL DEFAULT 0,
             last_sport REAL DEFAULT 0, last_hp_update REAL DEFAULT 0,
+            last_freed REAL DEFAULT 0,
             stat_regen INTEGER DEFAULT 0, stat_counter INTEGER DEFAULT 0,
             stat_block INTEGER DEFAULT 0, stat_jiu INTEGER DEFAULT 0,
             debuff_weak INTEGER DEFAULT 0, debuff_fear INTEGER DEFAULT 0,
             debuff_payoff INTEGER DEFAULT 0, casino_won INTEGER DEFAULT 0,
+            glove_durability INTEGER DEFAULT 0,
+            handcuffs INTEGER DEFAULT 0,
             PRIMARY KEY (user_id, chat_id)
         )''')
+        # Таблица заложников
+        c.execute('''CREATE TABLE IF NOT EXISTS kidnapped (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            victim_id INTEGER, victim_name TEXT,
+            kidnapper_id INTEGER, kidnapper_name TEXT,
+            chat_id INTEGER,
+            kidnapped_at REAL DEFAULT 0,
+            sold INTEGER DEFAULT 0,
+            last_income REAL DEFAULT 0,
+            handcuffed INTEGER DEFAULT 0
+        )''')
+        conn.commit()
+        # Миграции — добавляем колонки если их нет
+        existing = {row[1] for row in c.execute("PRAGMA table_info(users)")}
+        migrations = {
+            "black_money": "INTEGER DEFAULT 0",
+            "last_freed": "REAL DEFAULT 0",
+            "glove_durability": "INTEGER DEFAULT 0",
+            "handcuffs": "INTEGER DEFAULT 0",
+        }
+        for col, typedef in migrations.items():
+            if col not in existing:
+                c.execute(f"ALTER TABLE users ADD COLUMN {col} {typedef}")
+        # Обновляем max_hp до 6 для старых записей
+        c.execute("UPDATE users SET max_hp=6 WHERE max_hp=3")
         conn.commit()
     finally:
         conn.close()
+
+COL_NAMES = [
+    "user_id", "chat_id", "username", "hp", "max_hp", "money",
+    "black_money", "shield", "last_punch", "last_job", "last_sport",
+    "last_hp_update", "last_freed",
+    "stat_regen", "stat_counter", "stat_block", "stat_jiu",
+    "debuff_weak", "debuff_fear", "debuff_payoff", "casino_won",
+    "glove_durability", "handcuffs"
+]
 
 def _get_user(uid, cid, name):
     conn = _db()
@@ -129,22 +157,23 @@ def _get_user(uid, cid, name):
         row = c.fetchone()
         if not row:
             now = time.time()
-            vals = (uid, cid, name, 3, 3, 0, 0, 0, 0, 0, now, 0, 0, 0, 0, 0, 0, 0, 0)
-            c.execute("INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", vals)
+            vals = (uid, cid, name, 6, 6, 0, 0, 0, 0, 0, 0, now, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            c.execute(
+                "INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                vals
+            )
             conn.commit()
-            col_names = [
-                "user_id", "chat_id", "username", "hp", "max_hp", "money",
-                "shield", "last_punch", "last_job", "last_sport", "last_hp_update",
-                "stat_regen", "stat_counter", "stat_block", "stat_jiu",
-                "debuff_weak", "debuff_fear", "debuff_payoff", "casino_won"
-            ]
-            return dict(zip(col_names, vals))
-        return dict(row)
+            return dict(zip(COL_NAMES, vals))
+        d = dict(row)
+        # Заполняем отсутствующие поля дефолтами
+        for col in COL_NAMES:
+            if col not in d:
+                d[col] = 0
+        return d
     finally:
         conn.close()
 
 def _upd_user(uid, cid, fields: dict):
-    """Обновляет поля пользователя. fields — словарь {поле: значение}"""
     conn = _db()
     try:
         c = conn.cursor()
@@ -161,8 +190,8 @@ def _recalc_hp(uid, cid):
     u = _get_user(uid, cid, "")
     now = time.time()
     elapsed = now - u["last_hp_update"]
-    regen = max(60, 3600 * (1 - u["stat_regen"] / 100))
-    gained = int(elapsed // regen)
+    regen_time = calc_regen_time(u["stat_regen"])
+    gained = int(elapsed // regen_time)
     if gained > 0:
         nhp = min(u["max_hp"], u["hp"] + gained)
         if nhp != u["hp"]:
@@ -172,16 +201,119 @@ def _recalc_hp(uid, cid):
 def clean_nick(t):
     return (t or "User").replace("@", "").replace("[", "").replace("]", "").replace("(", "").replace(")", "").strip()
 
-# 🔁 Хелпер для БД в async — поддерживает positional args
+# ─── Async helpers ─────────────────────────────────────────────────────────────
+
 async def db_task(func, *args):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, func, *args)
 
-# Обёртка для _upd_user через db_task (принимает dict)
 async def async_upd(uid, cid, fields: dict):
     await db_task(_upd_user, uid, cid, fields)
 
-# 🥊 Удар
+# ─── Подвал helpers ────────────────────────────────────────────────────────────
+
+def _get_kidnapped_by_victim(vid, cid):
+    """Получить запись заложника по жертве (активную)."""
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM kidnapped WHERE victim_id=? AND chat_id=? AND sold=0",
+            (vid, cid)
+        )
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+def _get_kidnapped_by_kidnapper(kid, cid):
+    """Получить всех заложников похитителя (активных)."""
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM kidnapped WHERE kidnapper_id=? AND chat_id=? AND sold=0 ORDER BY id",
+            (kid, cid)
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+def _add_kidnapped(vid, vname, kid, kname, cid):
+    now = time.time()
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO kidnapped (victim_id, victim_name, kidnapper_id, kidnapper_name, chat_id, kidnapped_at, sold, last_income, handcuffed) VALUES (?,?,?,?,?,?,0,?,0)",
+            (vid, vname, kid, kname, cid, now, now)
+        )
+        conn.commit()
+        return c.lastrowid
+    finally:
+        conn.close()
+
+def _free_kidnapped(record_id):
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM kidnapped WHERE id=?", (record_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+def _sell_kidnapped(record_id):
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE kidnapped SET sold=1 WHERE id=?", (record_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+def _set_handcuffed(record_id, val: int):
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE kidnapped SET handcuffed=? WHERE id=?", (val, record_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+def _upd_kidnapped_income(record_id, last_income):
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE kidnapped SET last_income=? WHERE id=?", (last_income, record_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+def _count_hostages(kid, cid):
+    conn = _db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT COUNT(*) as cnt FROM kidnapped WHERE kidnapper_id=? AND chat_id=? AND sold=0",
+            (kid, cid)
+        )
+        return c.fetchone()["cnt"]
+    finally:
+        conn.close()
+
+# ─── Проверка: заблокированы ли действия ──────────────────────────────────────
+
+def _is_blocked(uid, cid) -> tuple[bool, str]:
+    """Возвращает (заблокирован, причина)."""
+    rec = _get_kidnapped_by_victim(uid, cid)
+    if rec:
+        if rec["handcuffed"]:
+            return True, "⛓️ Вы в наручниках в подвале! Сначала /freed (снять наручники), потом снова /freed (сбежать)."
+        return True, "🔒 Вы в подвале! Используйте /freed чтобы сбежать."
+    return False, ""
+
+# ─── Удар ──────────────────────────────────────────────────────────────────────
+
 async def do_punch(aid, aname, vid, cid, auto=False):
     try:
         now = time.time()
@@ -192,7 +324,7 @@ async def do_punch(aid, aname, vid, cid, auto=False):
             cd = COOLDOWNS["punch"] - (now - att["last_punch"])
             if cd > 0:
                 return await bot.send_message(
-                    cid, f"⏳ {att['username']}, кулдаун: {int(cd // 60)}м {int(cd % 60)}с"
+                    cid, f"⏳ {att['username']}, кулдаун: {format_time(cd)}"
                 )
 
         # Щит
@@ -220,16 +352,68 @@ async def do_punch(aid, aname, vid, cid, auto=False):
             return await bot.send_message(cid, f"🛡️ {vic['username']} заблокировал удар!")
 
         # Урон
-        dmg = 2 if (vic["debuff_weak"] > 0 and random.randint(1, 100) <= vic["debuff_weak"]) else 1
+        base_dmg = 2 if att["glove_durability"] > 0 else 1
+        dmg = base_dmg * 2 if (vic["debuff_weak"] > 0 and random.randint(1, 100) <= vic["debuff_weak"]) else base_dmg
         nhp = max(0, vic["hp"] - dmg)
+
+        # Износ перчатки
+        glove_msg = ""
+        if att["glove_durability"] > 0:
+            new_dur = att["glove_durability"] - 1
+            await async_upd(aid, cid, {"glove_durability": new_dur})
+            att["glove_durability"] = new_dur
+            if new_dur == 0:
+                glove_msg = "\n🥊 Боксёрская перчатка сломалась!"
+            else:
+                glove_msg = f"\n🥊 Перчатка: {new_dur}/10 прочности"
+
+        # Кража денег
         take = vic["money"] // 4
-        await async_upd(vid, cid, {"hp": nhp, "money": max(0, vic["money"] - take)})
-        await async_upd(aid, cid, {"money": att["money"] + take})
+        new_vic_money = max(0, vic["money"] - take)
+        new_att_money = att["money"] + take
+
+        # Кража чёрных монет (10%)
+        black_steal_msg = ""
+        if vic["black_money"] > 0 and random.randint(1, 100) <= 10:
+            bsteal = 1
+            new_vic_black = max(0, vic["black_money"] - bsteal)
+            new_att_black = att["black_money"] + bsteal
+            await async_upd(vid, cid, {"black_money": new_vic_black})
+            await async_upd(aid, cid, {"black_money": new_att_black})
+            black_steal_msg = f"\n🖤 Украдена {bsteal} чёрная монета!"
+
+        await async_upd(vid, cid, {"hp": nhp, "money": new_vic_money})
+        await async_upd(aid, cid, {"money": new_att_money})
 
         txt = random.choice(PUNCH_TEXTS).format(attacker=att["username"], victim=vic["username"])
         msg = f"💥 {txt}\n💰 +{take} | ❤️ {vic['username']}: {nhp}/{vic['max_hp']}"
-        if dmg == 2:
+        if dmg >= 2 and base_dmg == 1:
             msg += "\n⚡ Слабость удвоила урон!"
+        elif base_dmg == 2 and dmg == 4:
+            msg += "\n⚡ Перчатка + Слабость: 4 урона!"
+        msg += glove_msg
+        msg += black_steal_msg
+
+        # Если жертва упала до 0 HP — перчатка переходит
+        if nhp == 0 and att["glove_durability"] > 0:
+            # Перчатка уже у атакующего, всё ок. Но если перчатка у жертвы — ниже
+            pass
+        if nhp == 0 and vic["glove_durability"] > 0:
+            # Перчатка жертвы переходит атакующему
+            if att["glove_durability"] == 0:
+                await async_upd(aid, cid, {"glove_durability": vic["glove_durability"]})
+                await async_upd(vid, cid, {"glove_durability": 0})
+                msg += f"\n🥊 Перчатка ({vic['glove_durability']}/10) перешла к {att['username']}!"
+            else:
+                # У атакующего уже есть перчатка — жертва просто теряет свою (ломается)
+                await async_upd(vid, cid, {"glove_durability": 0})
+                msg += f"\n🥊 Перчатка {vic['username']} уничтожена!"
+
+        # Наручники жертвы при 0 HP теряются
+        if nhp == 0 and vic["handcuffs"] > 0:
+            await async_upd(aid, cid, {"handcuffs": att["handcuffs"] + vic["handcuffs"]})
+            await async_upd(vid, cid, {"handcuffs": 0})
+            msg += f"\n⛓️ Наручники ({vic['handcuffs']} шт.) перешли к {att['username']}!"
 
         # Отпор
         if vic["stat_counter"] > 0 and random.randint(1, 100) <= vic["stat_counter"]:
@@ -242,23 +426,27 @@ async def do_punch(aid, aname, vid, cid, auto=False):
             if valid:
                 st = random.choice(valid)
                 nv = vic[st] - 1 if st in POSITIVE_STATS else vic[st] + 1
-                await async_upd(vid, cid, {st: nv})
+                await async_upd(vid, cid, {st: max(0, nv)})
                 sign = "📉" if st in POSITIVE_STATS else "📈"
-                msg += f"\n{sign} {STAT_NAMES[st]}: {vic[st]}% → {nv}%"
+                msg += f"\n{sign} {STAT_NAMES[st]}: {vic[st]}% → {max(0, nv)}%"
+                if st == "stat_regen":
+                    new_regen_time = calc_regen_time(max(0, nv))
+                    msg += f" (реген: {format_time(new_regen_time)}/HP)"
 
-        # Страх (глобально)
+        # Страх
         conn = _db()
         try:
-            c = conn.cursor()
-            c.execute(
+            cur = conn.cursor()
+            cur.execute(
                 "SELECT username, debuff_fear FROM users WHERE chat_id=? AND debuff_fear>0",
                 (cid,)
             )
-            fear_rows = c.fetchall()
+            fear_rows = cur.fetchall()
         finally:
             conn.close()
 
-        for nm, fl in fear_rows:
+        for fr in fear_rows:
+            nm, fl = fr["username"], fr["debuff_fear"]
             if random.randint(1, 100) <= fl:
                 await bot.send_message(cid, random.choice(POOP_TEXTS).format(nick=nm))
 
@@ -271,7 +459,8 @@ async def do_punch(aid, aname, vid, cid, auto=False):
         logger.error(f"❌ Punch error: {e}", exc_info=True)
         await bot.send_message(cid, "⚠️ Ошибка при ударе. Попробуйте позже.")
 
-# 🛒 Магазин callback
+# ─── Магазин callback ──────────────────────────────────────────────────────────
+
 async def shop_cb(call: types.CallbackQuery):
     try:
         item = call.data.split(":")[1]
@@ -305,17 +494,52 @@ async def shop_cb(call: types.CallbackQuery):
             await call.answer("Щит получен!", show_alert=True)
             await call.message.edit_text(f"🛡️ {u['username']} купил щит")
 
+        elif item == "exchange_black":
+            # Разменять 1 чёрную монету на 10 обычных
+            if u["black_money"] < 1:
+                return await call.answer("Нет чёрных монет!", show_alert=True)
+            await async_upd(uid, cid, {
+                "black_money": u["black_money"] - 1,
+                "money": u["money"] + 10
+            })
+            await call.answer("Разменяно 1🖤 → 10💰!", show_alert=True)
+            await call.message.edit_text(f"💱 {u['username']} разменял 1🖤 → 10💰")
+
+        elif item == "glove":
+            if u["black_money"] < 3:
+                return await call.answer("Нужно 3🖤", show_alert=True)
+            if u["glove_durability"] > 0:
+                return await call.answer("Перчатка уже есть!", show_alert=True)
+            await async_upd(uid, cid, {
+                "black_money": u["black_money"] - 3,
+                "glove_durability": 10
+            })
+            await call.answer("🥊 Боксёрская перчатка получена!", show_alert=True)
+            await call.message.edit_text(f"🥊 {u['username']} купил боксёрскую перчатку (10/10)")
+
+        elif item == "handcuff":
+            if u["black_money"] < 1:
+                return await call.answer("Нужно 1🖤", show_alert=True)
+            await async_upd(uid, cid, {
+                "black_money": u["black_money"] - 1,
+                "handcuffs": u["handcuffs"] + 1
+            })
+            await call.answer("⛓️ Наручники куплены!", show_alert=True)
+            await call.message.edit_text(f"⛓️ {u['username']} купил наручники (теперь: {u['handcuffs'] + 1} шт.)")
+
     except Exception as e:
         logger.error(f"❌ Shop error: {e}", exc_info=True)
         await call.answer("⚠️ Ошибка магазина", show_alert=True)
 
-# 🌐 Глобальный обработчик ошибок
+# ─── Обработчик ошибок ────────────────────────────────────────────────────────
+
 @dp.errors()
 async def errors_handler(update: types.Update, exception: Exception):
     logger.error(f"🔥 UNHANDLED ERROR: {type(exception).__name__}: {exception}", exc_info=True)
     return True
 
-# 📝 Handlers
+# ─── Handlers ─────────────────────────────────────────────────────────────────
+
 @dp.message(Command("help"))
 async def cmd_help(m: types.Message):
     try:
@@ -329,16 +553,25 @@ async def cmd_help(m: types.Message):
             kb.button(text=t, callback_data=f"qcmd:{d}")
         kb.adjust(2)
         await m.answer(
-            "📖 **Помощь**\n"
+            "📖 **Помощь**\n\n"
             "🥊 /punch (ответ) — удар\n"
             "💼 /job — работа (+1💰)\n"
             "🏋️ /sport — прокачка\n"
-            "🎰 /casino <сумма> — казино (0/1/2/3/5х)\n"
+            "🎰 /casino <сумма> — казино\n"
             "🏆 /casinotop — топ чата\n"
             "📊 /stats — мои статы\n"
-            "🏪 /shop — магазин\n"
-            "⚠️ При 0 HP: только /shop и реген.\n"
-            "🌍 У каждого чата свой мир!",
+            "🏪 /shop — магазин\n\n"
+            "❤️ /hill (ответ) — поделиться HP (если у вас >1 HP, а у цели 0)\n\n"
+            "🔒 **Подвал:**\n"
+            "/kidnap (ответ) — похитить игрока с 0 HP\n"
+            "/freed — сбежать из подвала (30% шанс, кд 30м)\n"
+            "/sell <номер> — продать заложника в секс-рабство (через 30м)\n"
+            "/handcuff <номер> (или ответом) — надеть наручники на заложника\n\n"
+            "⚠️ При 0 HP: только /shop, /hill получить и реген.\n"
+            "🌍 У каждого чата свой мир!\n\n"
+            "🖤 **Чёрные монеты** = 10💰. Получают за секс-рабство.\n"
+            "🥊 Перчатка (3🖤) — x2 урон, 10 ударов.\n"
+            "⛓️ Наручники (1🖤) — сковать заложника в подвале.",
             parse_mode="Markdown",
             reply_markup=kb.as_markup()
         )
@@ -369,10 +602,14 @@ async def qcmd(call: types.CallbackQuery):
 @dp.message(Command("punch"))
 async def cmd_punch(m: types.Message):
     try:
+        uid = m.from_user.id
+        cid = m.chat.id
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
         if not m.reply_to_message:
             return await m.answer("⚠️ Ответьте на сообщение игрока!")
-        uid = m.from_user.id
-        u = await db_task(_get_user, uid, m.chat.id, clean_nick(m.from_user.full_name))
+        u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Ждите реген или купите жизнь в /shop")
         target = m.reply_to_message.from_user
@@ -380,8 +617,8 @@ async def cmd_punch(m: types.Message):
             return await m.answer("🤖 Ботов не бьём!")
         if target.id == uid:
             return await m.answer("🤡 Себя бить нельзя!")
-        await db_task(_get_user, target.id, m.chat.id, clean_nick(target.full_name))
-        await do_punch(uid, u["username"], target.id, m.chat.id)
+        await db_task(_get_user, target.id, cid, clean_nick(target.full_name))
+        await do_punch(uid, u["username"], target.id, cid)
     except Exception as e:
         logger.error(f"❌ /punch error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка удара")
@@ -391,13 +628,16 @@ async def cmd_job(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
         u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Нельзя работать")
         now = time.time()
         cd = COOLDOWNS["job"] - (now - u["last_job"])
         if cd > 0:
-            return await m.answer(f"⏳ Работа доступна через {int(cd // 60)}м {int(cd % 60)}с")
+            return await m.answer(f"⏳ Работа доступна через {format_time(cd)}")
         new_money = u["money"] + 1
         await async_upd(uid, cid, {"money": new_money, "last_job": now})
         await m.answer(f"💼 {u['username']} заработал +1💰 | Баланс: {new_money}💰")
@@ -410,18 +650,25 @@ async def cmd_sport(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
         u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Тренировки запрещены")
         now = time.time()
         cd = COOLDOWNS["sport"] - (now - u["last_sport"])
         if cd > 0:
-            return await m.answer(f"⏳ Тренировка доступна через {int(cd // 60)}м {int(cd % 60)}с")
+            return await m.answer(f"⏳ Тренировка доступна через {format_time(cd)}")
         st = random.choice(POSITIVE_STATS)
         old_val = u[st]
         nv = min(100, old_val + 1)
         await async_upd(uid, cid, {st: nv, "last_sport": now})
-        await m.answer(f"🏋️ {u['username']} прокачал {STAT_NAMES[st]}: {old_val}% → {nv}%")
+        msg = f"🏋️ {u['username']} прокачал {STAT_NAMES[st]}: {old_val}% → {nv}%"
+        if st == "stat_regen":
+            new_regen_time = calc_regen_time(nv)
+            msg += f"\n⏱ Время регенерации HP: {format_time(new_regen_time)}/HP"
+        await m.answer(msg)
     except Exception as e:
         logger.error(f"❌ /sport error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка тренировки")
@@ -432,9 +679,19 @@ async def cmd_shop(m: types.Message):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Сброс кулдауна (punch) — 3💰", callback_data="shop:skip")],
             [InlineKeyboardButton(text="❤️ +1 жизнь — 5💰", callback_data="shop:life")],
-            [InlineKeyboardButton(text="🛡️ Щит (блок 1 удара) — 4💰", callback_data="shop:shield")]
+            [InlineKeyboardButton(text="🛡️ Щит (блок 1 удара) — 4💰", callback_data="shop:shield")],
+            [InlineKeyboardButton(text="💱 Разменять 1🖤 → 10💰", callback_data="shop:exchange_black")],
+            [InlineKeyboardButton(text="🥊 Боксёрская перчатка — 3🖤", callback_data="shop:glove")],
+            [InlineKeyboardButton(text="⛓️ Наручники — 1🖤", callback_data="shop:handcuff")],
         ])
-        await m.answer("🏪 **Магазин** (доступен всегда, даже при 0 HP)", reply_markup=kb, parse_mode="Markdown")
+        await m.answer(
+            "🏪 **Магазин** (доступен всегда, даже при 0 HP)\n\n"
+            "🥊 Перчатка — x2 урон, 10 ударов. Только 1 шт.\n"
+            "⛓️ Наручники — сковать заложника в подвале.\n"
+            "💱 1🖤 = 10💰",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
     except Exception as e:
         logger.error(f"❌ /shop error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка магазина")
@@ -448,6 +705,9 @@ async def cmd_casino(m: types.Message):
     try:
         uid = m.from_user.id
         cid = m.chat.id
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
         u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Казино закрыто")
@@ -514,11 +774,36 @@ async def cmd_stats(m: types.Message):
         cid = m.chat.id
         await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
         u = await db_task(_recalc_hp, uid, cid)
+
+        # Время до следующего HP
+        now = time.time()
+        regen_time = calc_regen_time(u["stat_regen"])
+        elapsed_since_update = now - u["last_hp_update"]
+        time_to_next_hp = regen_time - (elapsed_since_update % regen_time)
+        if u["hp"] >= u["max_hp"]:
+            regen_str = "макс"
+        else:
+            regen_str = f"через {format_time(time_to_next_hp)}"
+
+        hostages = await db_task(_count_hostages, uid, cid)
+        kidnap_rec = await db_task(_get_kidnapped_by_victim, uid, cid)
+        kidnap_status = ""
+        if kidnap_rec:
+            kidnapper = kidnap_rec["kidnapper_name"]
+            cuffs = " (в наручниках)" if kidnap_rec["handcuffed"] else ""
+            kidnap_status = f"\n🔒 В подвале у: **{kidnapper}**{cuffs}"
+
         txt = (
             f"👤 **{u['username']}**\n"
-            f"❤️ HP: {u['hp']}/{u['max_hp']}\n"
+            f"❤️ HP: {u['hp']}/{u['max_hp']} ({regen_str})\n"
+            f"⏱ Время регена: {format_time(regen_time)}/HP\n"
             f"💰 Деньги: {u['money']}\n"
-            f"🛡️ Щит: {'✅' if u['shield'] else '❌'}\n\n"
+            f"🖤 Чёрные монеты: {u['black_money']}\n"
+            f"🛡️ Щит: {'✅' if u['shield'] else '❌'}\n"
+            f"🥊 Перчатка: {u['glove_durability']}/10\n"
+            f"⛓️ Наручники: {u['handcuffs']} шт.\n"
+            f"🔒 Заложников в подвале: {hostages}\n"
+            f"{kidnap_status}\n\n"
             f"📈 **Навыки:**\n"
             f"🔄 Регенерация: {u['stat_regen']}%\n"
             f"🥊 Отпор: {u['stat_counter']}%\n"
@@ -530,10 +815,302 @@ async def cmd_stats(m: types.Message):
             f"💸 Откуп: {u['debuff_payoff']}%\n\n"
             f"🎰 Выиграно в казино: {u['casino_won']}💰"
         )
-        await m.answer(txt, parse_mode="Markdown")
+        await m.answer(txt.strip(), parse_mode="Markdown")
     except Exception as e:
         logger.error(f"❌ /stats error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка загрузки статов")
+
+# ─── /hill ────────────────────────────────────────────────────────────────────
+
+@dp.message(Command("hill"))
+async def cmd_hill(m: types.Message):
+    try:
+        uid = m.from_user.id
+        cid = m.chat.id
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
+        if not m.reply_to_message:
+            return await m.answer("⚠️ Ответьте на сообщение игрока, которому хотите помочь!")
+        target = m.reply_to_message.from_user
+        if target.id == uid:
+            return await m.answer("🤡 Нельзя делиться HP с самим собой!")
+        if target.id == bot.id:
+            return await m.answer("🤖 Боту HP не нужно!")
+
+        u = await db_task(_recalc_hp, uid, cid)
+        if u["hp"] <= 1:
+            return await m.answer(f"❤️ У вас только {u['hp']} HP — нельзя делиться!")
+
+        t = await db_task(_recalc_hp, target.id, cid)
+        if t["hp"] > 0:
+            return await m.answer(f"❤️ У {t['username']} ещё есть HP ({t['hp']}/{t['max_hp']})!")
+
+        await async_upd(uid, cid, {"hp": u["hp"] - 1})
+        await async_upd(target.id, cid, {"hp": 1})
+        await m.answer(
+            f"❤️ {u['username']} поделился 1 HP с {t['username']}!\n"
+            f"Ваш HP: {u['hp'] - 1}/{u['max_hp']} | {t['username']}: 1/{t['max_hp']}"
+        )
+    except Exception as e:
+        logger.error(f"❌ /hill error: {e}", exc_info=True)
+        await m.answer("⚠️ Ошибка")
+
+# ─── /kidnap ──────────────────────────────────────────────────────────────────
+
+@dp.message(Command("kidnap"))
+async def cmd_kidnap(m: types.Message):
+    try:
+        uid = m.from_user.id
+        cid = m.chat.id
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
+        if not m.reply_to_message:
+            return await m.answer("⚠️ Ответьте на сообщение игрока которого хотите похитить!")
+        target = m.reply_to_message.from_user
+        if target.id == uid:
+            return await m.answer("🤡 Нельзя похитить самого себя!")
+        if target.id == bot.id:
+            return await m.answer("🤖 Бота не похищают!")
+
+        u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
+        if u["hp"] <= 0:
+            return await m.answer("💀 0 HP! Вы не можете никого похищать.")
+
+        t = await db_task(_recalc_hp, target.id, cid)
+        await db_task(_get_user, target.id, cid, clean_nick(target.full_name))
+
+        if t["hp"] > 0:
+            return await m.answer(f"❌ У {t['username']} ещё есть HP! Похищать можно только при 0 HP.")
+
+        # Проверка: уже в подвале?
+        existing = await db_task(_get_kidnapped_by_victim, target.id, cid)
+        if existing:
+            return await m.answer(f"🔒 {t['username']} уже находится в чьём-то подвале!")
+
+        kid_name = clean_nick(m.from_user.full_name)
+        vic_name = clean_nick(target.full_name)
+        await db_task(_add_kidnapped, target.id, vic_name, uid, kid_name, cid)
+
+        hostages = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
+        num = len(hostages)
+
+        await m.answer(
+            f"🔒 {kid_name} похитил {vic_name} и запер в подвале!\n"
+            f"Заложник #{num} в вашем списке.\n"
+            f"Жертва может сбежать по /freed (30% шанс, кд 30м).\n"
+            f"Через 30 минут можно продать в секс-рабство (/sell {num})"
+        )
+    except Exception as e:
+        logger.error(f"❌ /kidnap error: {e}", exc_info=True)
+        await m.answer("⚠️ Ошибка похищения")
+
+# ─── /freed ───────────────────────────────────────────────────────────────────
+
+@dp.message(Command("freed"))
+async def cmd_freed(m: types.Message):
+    try:
+        uid = m.from_user.id
+        cid = m.chat.id
+        u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
+
+        rec = await db_task(_get_kidnapped_by_victim, uid, cid)
+        if not rec:
+            return await m.answer("🤷 Вы не в подвале!")
+
+        now = time.time()
+        cd = COOLDOWNS["freed"] - (now - u["last_freed"])
+        if cd > 0:
+            return await m.answer(f"⏳ Попытка побега доступна через {format_time(cd)}")
+
+        await async_upd(uid, cid, {"last_freed": now})
+
+        # Наручники — снять сначала
+        if rec["handcuffed"]:
+            if random.randint(1, 100) <= 30:
+                await db_task(_set_handcuffed, rec["id"], 0)
+                return await m.answer(
+                    f"⛓️ {u['username']} снял наручники! Теперь попробуй сбежать (/freed через 30м)"
+                )
+            else:
+                return await m.answer(
+                    f"⛓️ {u['username']} не смог снять наручники! Попробуй через 30м."
+                )
+
+        # Побег из подвала
+        if random.randint(1, 100) <= 30:
+            kidnapper_id = rec["kidnapper_id"]
+            await db_task(_free_kidnapped, rec["id"])
+            await m.answer(
+                f"🏃 {u['username']} сбежал из подвала {rec['kidnapper_name']}!\n"
+                f"Свобода!"
+            )
+        else:
+            await m.answer(
+                f"😢 {u['username']} не смог сбежать из подвала {rec['kidnapper_name']}!\n"
+                f"Следующая попытка через 30м."
+            )
+    except Exception as e:
+        logger.error(f"❌ /freed error: {e}", exc_info=True)
+        await m.answer("⚠️ Ошибка побега")
+
+# ─── /sell ────────────────────────────────────────────────────────────────────
+
+@dp.message(Command("sell"))
+async def cmd_sell(m: types.Message):
+    try:
+        uid = m.from_user.id
+        cid = m.chat.id
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
+
+        parts = m.text.split()
+        if len(parts) < 2:
+            return await m.answer("⚠️ Использование: /sell <номер заложника>")
+        try:
+            num = int(parts[1])
+        except ValueError:
+            return await m.answer("❌ Введите номер заложника")
+
+        hostages = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
+        if not hostages or num < 1 or num > len(hostages):
+            return await m.answer(f"❌ Заложник #{num} не найден. У вас {len(hostages)} заложник(ов).")
+
+        rec = hostages[num - 1]
+        now = time.time()
+        held_for = now - rec["kidnapped_at"]
+
+        if held_for < 1800:
+            remaining = 1800 - held_for
+            return await m.answer(
+                f"⏳ Нужно держать заложника ещё {format_time(remaining)} перед продажей."
+            )
+
+        # Проверка: уже продан?
+        if rec["sold"]:
+            return await m.answer("❌ Этот заложник уже продан!")
+
+        await db_task(_sell_kidnapped, rec["id"])
+        await m.answer(
+            f"💰 {rec['victim_name']} продан в секс-рабство!\n"
+            f"Вы будете получать 1🖤 каждые 2 часа заключения.\n"
+            f"Заложник может сбежать по /freed."
+        )
+        try:
+            await bot.send_message(
+                cid,
+                f"😱 {rec['victim_name']} был продан в секс-рабство {rec['kidnapper_name']}!\n"
+                f"Используй /freed чтобы сбежать!"
+            )
+        except:
+            pass
+    except Exception as e:
+        logger.error(f"❌ /sell error: {e}", exc_info=True)
+        await m.answer("⚠️ Ошибка продажи")
+
+# ─── /handcuff ────────────────────────────────────────────────────────────────
+
+@dp.message(Command("handcuff"))
+async def cmd_handcuff(m: types.Message):
+    try:
+        uid = m.from_user.id
+        cid = m.chat.id
+        blocked, reason = await db_task(_is_blocked, uid, cid)
+        if blocked:
+            return await m.answer(reason)
+
+        u = await db_task(_get_user, uid, cid, clean_nick(m.from_user.full_name))
+        if u["handcuffs"] <= 0:
+            return await m.answer("⛓️ У вас нет наручников! Купите в /shop за 1🖤")
+
+        hostages = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
+        if not hostages:
+            return await m.answer("🔒 У вас нет заложников!")
+
+        # Определяем цель: ответ на сообщение или номер
+        target_rec = None
+        parts = m.text.split()
+
+        if m.reply_to_message:
+            target_id = m.reply_to_message.from_user.id
+            for h in hostages:
+                if h["victim_id"] == target_id:
+                    target_rec = h
+                    break
+            if not target_rec:
+                return await m.answer("❌ Этот игрок не является вашим заложником!")
+        elif len(parts) >= 2:
+            try:
+                num = int(parts[1])
+            except ValueError:
+                return await m.answer("❌ Укажите номер заложника или ответьте на его сообщение")
+            if num < 1 or num > len(hostages):
+                return await m.answer(f"❌ Заложник #{num} не найден")
+            target_rec = hostages[num - 1]
+        else:
+            # Показываем список
+            txt = "⛓️ **Ваши заложники:**\n"
+            for i, h in enumerate(hostages, 1):
+                cuffs = " [в наручниках]" if h["handcuffed"] else ""
+                txt += f"{i}. {h['victim_name']}{cuffs}\n"
+            txt += "\nИспользование: /handcuff <номер> или ответом на сообщение"
+            return await m.answer(txt, parse_mode="Markdown")
+
+        if target_rec["handcuffed"]:
+            return await m.answer(f"⛓️ {target_rec['victim_name']} уже в наручниках!")
+
+        await db_task(_set_handcuffed, target_rec["id"], 1)
+        await async_upd(uid, cid, {"handcuffs": u["handcuffs"] - 1})
+        await m.answer(
+            f"⛓️ {u['username']} надел наручники на {target_rec['victim_name']}!\n"
+            f"Теперь жертве нужно дважды использовать /freed."
+        )
+    except Exception as e:
+        logger.error(f"❌ /handcuff error: {e}", exc_info=True)
+        await m.answer("⚠️ Ошибка")
+
+# ─── Фоновая задача: начисление чёрных монет за секс-рабство ──────────────────
+
+async def income_loop():
+    """Каждые 5 минут проверяем проданных заложников и начисляем чёрные монеты."""
+    await asyncio.sleep(30)  # Старт с задержкой
+    while True:
+        try:
+            now = time.time()
+            conn = _db()
+            try:
+                c = conn.cursor()
+                # sold=1 — в секс-рабстве
+                c.execute("SELECT * FROM kidnapped WHERE sold=1")
+                rows = [dict(r) for r in c.fetchall()]
+            finally:
+                conn.close()
+
+            for rec in rows:
+                # Каждые 2 часа
+                if now - rec["last_income"] >= 7200:
+                    periods = int((now - rec["last_income"]) // 7200)
+                    earned = periods
+                    kid_id = rec["kidnapper_id"]
+                    kid_cid = rec["chat_id"]
+                    kd = _get_user(kid_id, kid_cid, rec["kidnapper_name"])
+                    _upd_user(kid_id, kid_cid, {"black_money": kd["black_money"] + earned})
+                    new_last = rec["last_income"] + periods * 7200
+                    _upd_kidnapped_income(rec["id"], new_last)
+                    try:
+                        await bot.send_message(
+                            kid_cid,
+                            f"🖤 {rec['kidnapper_name']} получил {earned}🖤 за заложника {rec['victim_name']}!"
+                        )
+                    except:
+                        pass
+        except Exception as e:
+            logger.error(f"❌ Income loop error: {e}", exc_info=True)
+        await asyncio.sleep(300)  # Проверяем каждые 5 минут
+
+# ─── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
     init_db()
@@ -546,9 +1123,15 @@ async def main():
         types.BotCommand(command="sport",      description="Прокачка навыка"),
         types.BotCommand(command="casino",     description="Казино: /casino 100"),
         types.BotCommand(command="casinotop",  description="Топ казино чата"),
-        types.BotCommand(command="shop",       description="Магазин")
+        types.BotCommand(command="shop",       description="Магазин"),
+        types.BotCommand(command="hill",       description="Поделиться HP (ответом)"),
+        types.BotCommand(command="kidnap",     description="Похитить игрока с 0 HP"),
+        types.BotCommand(command="freed",      description="Сбежать из подвала"),
+        types.BotCommand(command="sell",       description="Продать заложника в секс-рабство"),
+        types.BotCommand(command="handcuff",   description="Надеть наручники на заложника"),
     ])
     logger.info("✅ Commands set")
+    asyncio.create_task(income_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
