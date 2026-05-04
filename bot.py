@@ -22,15 +22,64 @@ dp = Dispatcher()
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
 
+async def _delete_later(chat_id: int, message_id: int, delay: int = 300):
+    """Удаляет сообщение через delay секунд."""
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+async def reply_and_delete(m: types.Message, text: str, delay: int = 300, **kwargs):
+    """Отправляет ответ и планирует его удаление."""
+    sent = await m.answer(text, **kwargs)
+    asyncio.create_task(_delete_later(sent.chat.id, sent.message_id, delay))
+    return sent
+
 class AutoDeleteMiddleware(BaseMiddleware):
-    """Удаляет входящее сообщение с командой через 5 минут."""
+    """
+    Удаляет через 5 минут:
+    - любые сообщения бота (исходящие)
+    - сообщения игроков начинающиеся с / (команды)
+    Исключение: POOP_TEXTS — не удаляются (обрабатываются отдельно в do_punch).
+    """
     async def __call__(self, handler, event: TelegramObject, data: dict):
         result = await handler(event, data)
-        if isinstance(event, types.Message) and event.text and event.text.startswith("/"):
-            asyncio.create_task(_delete_later(event.chat.id, event.message_id))
+        # Удаляем входящую команду игрока
+        if isinstance(event, types.Message):
+            if event.text and event.text.startswith("/"):
+                asyncio.create_task(_delete_later(event.chat.id, event.message_id))
         return result
 
 dp.message.middleware(AutoDeleteMiddleware())
+
+# ── Патч bot.send_message для авто-удаления всех исходящих ──────────────────
+
+_original_send_message = Bot.send_message
+_original_answer = types.Message.answer
+
+async def _patched_send_message(self, chat_id, text, *args, _no_delete=False, **kwargs):
+    msg = await _original_send_message(self, chat_id, text, *args, **kwargs)
+    if not _no_delete:
+        asyncio.create_task(_delete_later(chat_id, msg.message_id))
+    return msg
+
+async def _patched_answer(self, text, *args, _no_delete=False, **kwargs):
+    msg = await _original_answer(self, text, *args, **kwargs)
+    if not _no_delete:
+        asyncio.create_task(_delete_later(self.chat.id, msg.message_id))
+    return msg
+
+Bot.send_message = _patched_send_message
+types.Message.answer = _patched_answer
+
+async def edit_and_delete(msg: types.Message, text: str, delay: int = 300, **kwargs):
+    """Редактирует сообщение и планирует удаление."""
+    try:
+        await msg.edit_text(text, **kwargs)
+    except Exception:
+        pass
+    asyncio.create_task(_delete_later(msg.chat.id, msg.message_id, delay))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -152,13 +201,14 @@ STAT_NAMES = {
     "stat_jiu": "Джиу-джитсу",
     "stat_success": "Успех",
     "stat_gigachad": "Гигачад",
+    "stat_luck": "Удача",
     "debuff_weak": "Слабость",
     "debuff_fear": "Страх",
     "debuff_payoff": "Откуп",
     "debuff_cross": "Косость",
 }
 
-POSITIVE_STATS = ["stat_regen", "stat_counter", "stat_block", "stat_jiu", "stat_success", "stat_gigachad"]
+POSITIVE_STATS = ["stat_regen", "stat_counter", "stat_block", "stat_jiu", "stat_success", "stat_gigachad", "stat_luck"]
 ALL_STATS = POSITIVE_STATS + ["debuff_weak", "debuff_fear", "debuff_payoff", "debuff_cross"]
 
 BASE_JOB_COOLDOWN = 3600
@@ -188,6 +238,21 @@ def calc_sport_cooldown(gigachad: int) -> int:
         return int(BASE_SPORT_COOLDOWN - (BASE_SPORT_COOLDOWN - 1800) * gigachad / 100)
     else:
         return int(BASE_SPORT_COOLDOWN + (10800 - BASE_SPORT_COOLDOWN) * (-gigachad) / 100)
+
+def calc_escape_chance(stat_luck: int) -> int:
+    """
+    Базовый шанс побега 50%.
+    stat_luck от -100 до 100.
+    При +100 → 90%
+    При 0    → 50%
+    При -100 → 10%
+    Линейно.
+    """
+    base = 50
+    if stat_luck >= 0:
+        return min(90, base + int(40 * stat_luck / 100))
+    else:
+        return max(10, base + int(40 * stat_luck / 100))
 
 def calc_job_salary(job_count: int) -> float:
     if job_count < 50:
@@ -351,7 +416,7 @@ COL_DEFAULTS = {
     "shield": 0, "last_punch": 0.0, "last_job": 0.0,
     "last_sport": 0.0, "last_hp_update": 0.0, "last_freed": 0.0,
     "stat_regen": 0, "stat_counter": 0, "stat_block": 0, "stat_jiu": 0,
-    "stat_success": 0, "stat_gigachad": 0,
+    "stat_success": 0, "stat_gigachad": 0, "stat_luck": 0,
     "debuff_weak": 0, "debuff_fear": 0, "debuff_payoff": 0, "debuff_cross": 0,
     "casino_won": 0, "glove_durability": 0, "handcuffs": 0,
     "tranq_until": 0.0, "adren_until": 0.0, "tranq_stock": 0,
@@ -433,6 +498,7 @@ def init_db():
             "jammer_until": "REAL DEFAULT 0",
             "stat_success": "INTEGER DEFAULT 0",
             "stat_gigachad": "INTEGER DEFAULT 0",
+            "stat_luck": "INTEGER DEFAULT 0",
             "debuff_cross": "INTEGER DEFAULT 0",
             "job_count": "INTEGER DEFAULT 0",
             "house_hp": "INTEGER DEFAULT 0",
@@ -528,20 +594,6 @@ def _recalc_hp(uid: int, cid: int) -> dict:
 async def db_task(func, *args):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, func, *args)
-
-async def _delete_later(chat_id: int, message_id: int, delay: int = 300):
-    """Удаляет сообщение через delay секунд (по умолчанию 5 минут)."""
-    await asyncio.sleep(delay)
-    try:
-        await bot.delete_message(chat_id, message_id)
-    except Exception:
-        pass
-
-async def reply_and_delete(m: types.Message, text: str, delay: int = 300, **kwargs):
-    """Отправляет ответ и удаляет его через delay секунд."""
-    sent = await m.answer(text, **kwargs)
-    asyncio.create_task(_delete_later(m.chat.id, sent.message_id, delay))
-    return sent
 
 async def async_upd(uid: int, cid: int, fields: dict):
     await db_task(_upd_user, uid, cid, fields)
@@ -903,9 +955,11 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
         f"   🛡️ Блок:         {u['stat_block']}%",
         f"   🥋 Джиу-джитсу: {u['stat_jiu']}%",
         f"   ⭐ Успех:        {u.get('stat_success', 0)}%"
-        + (f" (КД работы: {format_time(calc_job_cooldown(u.get('stat_success',0)))})" if u.get('stat_success',0) != 0 else ""),
+        + (f" → КД работы {format_time(calc_job_cooldown(u.get('stat_success', 0)))}" if u.get('stat_success', 0) != 0 else ""),
         f"   💪 Гигачад:      {u.get('stat_gigachad', 0)}%"
-        + (f" (КД спорта: {format_time(calc_sport_cooldown(u.get('stat_gigachad',0)))})" if u.get('stat_gigachad',0) != 0 else ""),
+        + (f" → КД спорта {format_time(calc_sport_cooldown(u.get('stat_gigachad', 0)))}" if u.get('stat_gigachad', 0) != 0 else ""),
+        f"   🍀 Удача:        {u.get('stat_luck', 0)}%"
+        + f" → шанс побега {calc_escape_chance(u.get('stat_luck', 0))}%",
         "",
         "📉 Дебаффы:",
         f"   🦠 Слабость: {u['debuff_weak']}%",
@@ -1108,8 +1162,8 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
                 for s in ["debuff_weak", "debuff_fear", "debuff_payoff", "debuff_cross"]:
                     if vic_fresh.get(s, 0) < 100:
                         pool.append((s, False))
-                for s in ["stat_counter", "stat_block", "stat_jiu"]:
-                    if vic_fresh.get(s, 0) > 0:
+                for s in ["stat_counter", "stat_block", "stat_jiu", "stat_luck"]:
+                    if vic_fresh.get(s, 0) > -100:
                         pool.append((s, True))
                 if pool:
                     chosen, is_pos = random.choice(pool)
@@ -1118,6 +1172,8 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
                     await async_upd(vid, cid, {chosen: new_v})
                     sign = "📉" if is_pos else "📈"
                     stat_msg = f"\n{sign} {STAT_NAMES[chosen]}: {old_v}% → {new_v}%"
+                    if chosen == "stat_luck":
+                        stat_msg += f" → шанс побега {calc_escape_chance(new_v)}%"
 
         msg_text += stat_msg
 
@@ -1138,7 +1194,8 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
                 # Сообщение об обосрался — НЕ удаляем
                 await bot.send_message(
                     cid,
-                    random.choice(POOP_TEXTS).format(nick=fr["username"])
+                    random.choice(POOP_TEXTS).format(nick=fr["username"]),
+                    _no_delete=True
                 )
 
         if not auto:
@@ -1168,7 +1225,7 @@ async def shop_cb(call: types.CallbackQuery):
                 return await call.answer("Нужно 3💰", show_alert=True)
             await async_upd(uid, cid, {"money": u["money"] - 3, "last_punch": now - COOLDOWNS["punch"]})
             await call.answer("Кулдаун сброшен!", show_alert=True)
-            await call.message.edit_text(f"✅ {u['username']} купил сброс кулдауна")
+            await edit_and_delete(call.message, f"✅ {u['username']} купил сброс кулдауна")
 
         elif item == "life":
             if u["money"] < 5:
@@ -1177,7 +1234,7 @@ async def shop_cb(call: types.CallbackQuery):
                 return await call.answer("Уже максимум HP!", show_alert=True)
             await async_upd(uid, cid, {"money": u["money"] - 5, "hp": u["hp"] + 1})
             await call.answer("+1 HP!", show_alert=True)
-            await call.message.edit_text(f"❤️ {u['username']} купил +1 HP")
+            await edit_and_delete(call.message, f"❤️ {u['username']} купил +1 HP")
 
         elif item == "shield":
             if u["money"] < 4:
@@ -1186,14 +1243,14 @@ async def shop_cb(call: types.CallbackQuery):
                 return await call.answer("Щит уже есть!", show_alert=True)
             await async_upd(uid, cid, {"money": u["money"] - 4, "shield": 1})
             await call.answer("Щит получен!", show_alert=True)
-            await call.message.edit_text(f"🛡️ {u['username']} купил щит")
+            await edit_and_delete(call.message, f"🛡️ {u['username']} купил щит")
 
         elif item == "exchange_black":
             if u["black_money"] < 1:
                 return await call.answer("Нет чёрных монет!", show_alert=True)
             await async_upd(uid, cid, {"black_money": u["black_money"] - 1, "money": u["money"] + 10})
             await call.answer("1🖤 → 10💰!", show_alert=True)
-            await call.message.edit_text(f"💱 {u['username']} разменял 1🖤 → 10💰")
+            await edit_and_delete(call.message, f"💱 {u['username']} разменял 1🖤 → 10💰")
 
         elif item == "glove":
             if u["black_money"] < 3:
@@ -1202,14 +1259,14 @@ async def shop_cb(call: types.CallbackQuery):
                 return await call.answer("Перчатка уже есть!", show_alert=True)
             await async_upd(uid, cid, {"black_money": u["black_money"] - 3, "glove_durability": 10})
             await call.answer("🥊 Перчатка получена!", show_alert=True)
-            await call.message.edit_text(f"🥊 {u['username']} купил боксёрскую перчатку (10/10)")
+            await edit_and_delete(call.message, f"🥊 {u['username']} купил боксёрскую перчатку (10/10)")
 
         elif item == "handcuff":
             if u["black_money"] < 1:
                 return await call.answer("Нужно 1🖤", show_alert=True)
             await async_upd(uid, cid, {"black_money": u["black_money"] - 1, "handcuffs": u["handcuffs"] + 1})
             await call.answer("⛓️ Наручники куплены!", show_alert=True)
-            await call.message.edit_text(f"⛓️ {u['username']} купил наручники (всего: {u['handcuffs'] + 1} шт.)")
+            await edit_and_delete(call.message, f"⛓️ {u['username']} купил наручники (всего: {u['handcuffs'] + 1} шт.)")
 
         elif item == "tranq":
             if u["black_money"] < 4:
@@ -1219,7 +1276,8 @@ async def shop_cb(call: types.CallbackQuery):
                 "tranq_stock": u["tranq_stock"] + 1,
             })
             await call.answer("💉 Транквилизатор куплен! Используй /trank", show_alert=True)
-            await call.message.edit_text(
+            await edit_and_delete(
+                call.message,
                 f"💉 {u['username']} купил транквилизатор!\n"
                 f"Запас: {u['tranq_stock'] + 1} шт. Используй /trank ответом на жертву."
             )
@@ -1232,7 +1290,8 @@ async def shop_cb(call: types.CallbackQuery):
             adren_end = now + 10800
             await async_upd(uid, cid, {"black_money": u["black_money"] - 3, "adren_until": adren_end})
             await call.answer("🔥 Адреналин на 3 часа! КД удара: 15 минут", show_alert=True)
-            await call.message.edit_text(
+            await edit_and_delete(
+                call.message,
                 f"🔥 {u['username']} выпил адреналин!\nКД удара снижен до 15 минут на 3 часа."
             )
 
@@ -1245,7 +1304,8 @@ async def shop_cb(call: types.CallbackQuery):
                 "jammer_until": jammer_end,
             })
             await call.answer("📡 Глушилка активирована на 3 дня!", show_alert=True)
-            await call.message.edit_text(
+            await edit_and_delete(
+                call.message,
                 f"📡 {u['username']} купил глушилку!\n"
                 f"Рабам придётся решить 10 сапёров вместо 3 для вызова копов.\n"
                 f"Действует 3 дня."
@@ -1263,7 +1323,8 @@ async def shop_cb(call: types.CallbackQuery):
             })
             next_price = price + 100
             await call.answer(f"🏠 Дом куплен! Прочность: {new_house_hp}/30", show_alert=True)
-            await call.message.edit_text(
+            await edit_and_delete(
+                call.message,
                 f"🏠 {u['username']} купил дом!\n"
                 f"Прочность: {new_house_hp}/30 ударов.\n"
                 f"Следующая покупка: {next_price}💰"
@@ -1843,69 +1904,73 @@ async def cmd_freed(m: types.Message):
 
         await async_upd(uid, cid, {"last_freed": now})
 
-        # ════════════════════════════════════════════
-        # РАБСТВО (sold=1)
-        # ════════════════════════════════════════════
+        escape_chance = calc_escape_chance(u.get("stat_luck", 0))
+
+        # ════ РАБСТВО (sold=1) ════
         if rec["sold"] == 1:
             owner_name = rec.get("slave_owner_name", "?")
 
-            # Шаг 1: снять наручники в рабстве
+            # Снятие наручников
             if rec["handcuffed"]:
-                if random.randint(1, 100) <= 50:
+                if random.randint(1, 100) <= escape_chance:
                     await db_task(_set_handcuffed, rec["id"], 0)
-                    return await reply_and_delete(m,
+                    return await m.answer(
                         f"⛓️ {display} снял наручники в рабстве у {owner_name}!\n"
+                        f"(шанс был {escape_chance}%)\n"
                         f"Теперь попробуй сбежать (/freed через 30м)"
                     )
                 else:
-                    return await reply_and_delete(m,
-                        f"⛓️ {display} не смог снять наручники в рабстве у {owner_name}!\n"
+                    return await m.answer(
+                        f"⛓️ {display} не смог снять наручники! (шанс был {escape_chance}%)\n"
                         f"Попробуй через 30м."
                     )
 
-            # Шаг 2: сбежать из рабства обратно в подвал к клиенту (slave_owner)
-            if random.randint(1, 100) <= 50:
-                # Клиент становится новым похитителем в подвале
+            # Побег из рабства в подвал клиента
+            if random.randint(1, 100) <= escape_chance:
                 client_id = rec.get("slave_owner_id", 0)
                 client_name = rec.get("slave_owner_name", "?")
                 await db_task(_escape_from_slavery, rec["id"], client_id, client_name)
-                return await reply_and_delete(m,
-                    f"🏃 {display} сбежал из рабства!\n"
+                return await m.answer(
+                    f"🏃 {display} сбежал из рабства! (шанс был {escape_chance}%)\n"
                     f"Теперь {display} в подвале у {client_name}.\n"
                     f"Используй /freed ещё раз чтобы сбежать окончательно (кд 30м)."
                 )
             else:
-                return await reply_and_delete(m,
-                    f"😢 {display} не смог сбежать из рабства {owner_name}!\n"
+                return await m.answer(
+                    f"😢 {display} не смог сбежать из рабства {owner_name}! "
+                    f"(шанс был {escape_chance}%)\n"
                     f"Следующая попытка через 30м."
                 )
 
-        # ════════════════════════════════════════════
-        # ПОДВАЛ (sold=0)
-        # ════════════════════════════════════════════
+        # ════ ПОДВАЛ (sold=0) ════
         kidnapper_name = rec.get("kidnapper_name", "?")
 
-        # Шаг: снять наручники в подвале
+        # Снятие наручников
         if rec["handcuffed"]:
-            if random.randint(1, 100) <= 50:
+            if random.randint(1, 100) <= escape_chance:
                 await db_task(_set_handcuffed, rec["id"], 0)
-                return await reply_and_delete(m,
+                return await m.answer(
                     f"⛓️ {display} снял наручники в подвале {kidnapper_name}!\n"
+                    f"(шанс был {escape_chance}%)\n"
                     f"Теперь попробуй сбежать (/freed через 30м)"
                 )
             else:
-                return await reply_and_delete(m,
-                    f"⛓️ {display} не смог снять наручники в подвале {kidnapper_name}!\n"
+                return await m.answer(
+                    f"⛓️ {display} не смог снять наручники! (шанс был {escape_chance}%)\n"
                     f"Попробуй через 30м."
                 )
 
-        # Финальный побег из подвала
-        if random.randint(1, 100) <= 50:
+        # Финальный побег
+        if random.randint(1, 100) <= escape_chance:
             await db_task(_free_kidnapped, rec["id"])
-            await reply_and_delete(m, f"🏃 {display} окончательно сбежал из подвала {kidnapper_name}! Свобода!")
+            await m.answer(
+                f"🏃 {display} окончательно сбежал из подвала {kidnapper_name}! "
+                f"Свобода! (шанс был {escape_chance}%)"
+            )
         else:
-            await reply_and_delete(m,
-                f"😢 {display} не смог сбежать из подвала {kidnapper_name}!\n"
+            await m.answer(
+                f"😢 {display} не смог сбежать из подвала {kidnapper_name}! "
+                f"(шанс был {escape_chance}%)\n"
                 f"Следующая попытка через 30м."
             )
     except Exception as e:
@@ -2381,7 +2446,8 @@ async def sapper_cb(call: types.CallbackQuery):
             del sapper_sessions[uid]
             await call.answer("💥 МИНА! Вызов провалился!", show_alert=True)
             try:
-                await call.message.edit_text(
+                await edit_and_delete(
+                    call.message,
                     f"💥 {call.from_user.full_name} подорвался на мине!\n"
                     f"Копы не приедут. Раунд {session['round']}/3 провален.\n"
                     f"Попробуй снова через 5 часов (/911)",
@@ -2414,7 +2480,8 @@ async def sapper_cb(call: types.CallbackQuery):
                 await call.answer(f"✅ Раунд {round_num} пройден! Следующий раунд!", show_alert=True)
                 kb = _sapper_keyboard(session)
                 try:
-                    await call.message.edit_text(
+                    await edit_and_delete(
+                        call.message,
                         f"🚔 Раунд {next_round}/{rounds_total} | Мин: {next_mines}\n"
                         f"Продолжай! Открой все безопасные клетки!",
                         reply_markup=kb
@@ -2444,7 +2511,8 @@ async def sapper_cb(call: types.CallbackQuery):
 
                 await call.answer("🎉 ВСЕ РАУНДЫ ПРОЙДЕНЫ! Копы едут!", show_alert=True)
                 try:
-                    await call.message.edit_text(
+                    await edit_and_delete(
+                        call.message,
                         f"🚔 {display} решил все 3 сапёра и вызвал копов!\n\n"
                         f"✅ {display} полностью освобождён!\n"
                         f"🚨 {client_name} арестован на 3 часа!\n"
