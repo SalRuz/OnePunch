@@ -1366,35 +1366,35 @@ async def cmd_help(m: types.Message):
 
         await m.answer(
             "📖 Помощь\n\n"
-            "🥊 /punch (ответ) — удар (кд 30м)\n"
+            "🥊 /punch (ответ или @тег) — удар (кд 30м)\n"
             "💼 /job — работа (+1💰, кд 1ч)\n"
             "🏋️ /sport — прокачка навыка (кд 1.5ч)\n"
             "🎰 /casino <сумма> — казино\n"
             "🏆 /casinotop — топ чата\n"
             "📊 /stats — мои статы (или ответом — чужие)\n"
             "🏪 /shop — магазин\n\n"
-            "❤️ /hill (ответ) — передать 1 HP любому игроку (нужно >1 HP)\n"
-            "💱 /give <N> coin — передать N💰 (ответом на игрока)\n"
-            "💱 /give <N> black — передать N🖤 (ответом на игрока)\n\n"
+            "❤️ /hill (ответ или @тег) — передать 1 HP любому игроку (нужно >1 HP)\n"
+            "💱 /give <N> coin (ответ или @тег) — передать N💰\n"
+            "💱 /give <N> black (ответ или @тег) — передать N🖤\n\n"
             "🔒 Подвал и рабство:\n"
-            "   /kidnap (ответ) — похитить игрока с 0 HP\n"
-            "   /freed — сбежать (30% шанс, кд 30м)\n"
-            "   /sell <номер> (ответ на игрока) — продать в рабство тому игроку\n"
-            "   /handcuff <номер> или ответом — надеть наручники\n\n"
+            "   /kidnap (ответ или @тег) — похитить игрока с 0 HP\n"
+            "   /freed — сбежать (шанс зависит от удачи, кд 30м)\n"
+            "   /sell <номер> (ответ или @тег покупателя) — продать в рабство\n"
+            "   /handcuff <номер> или ответ или @тег — надеть наручники\n\n"
             "🔓 Порядок побега из рабства с наручниками:\n"
-            "   1️⃣ /freed — снять наручники (30%, кд 30м)\n"
-            "   2️⃣ /freed — сбежать из рабства в подвал (30%, кд 30м)\n"
-            "   3️⃣ /freed — сбежать из подвала (30%, кд 30м)\n\n"
+            "   1️⃣ /freed — снять наручники (шанс = удача, кд 30м)\n"
+            "   2️⃣ /freed — сбежать из рабства в подвал (шанс = удача, кд 30м)\n"
+            "   3️⃣ /freed — сбежать из подвала (шанс = удача, кд 30м)\n\n"
             "🚔 /911 — вызов копов (только в рабстве, кд 5ч)\n"
             "   Реши 3 сапёра → освобождение + клиент в тюрьму 3ч\n\n"
             "💉 Спецпредметы:\n"
-            "   /trank (ответ) — транквилизатор: паралич 3ч + стоп регена (4🖤)\n"
+            "   /trank (ответ или @тег) — транквилизатор: паралич 3ч + стоп регена (4🖤)\n"
             "   /adren — статус адреналина (купить 3🖤): КД удара 15м на 3ч\n\n"
             "⚠️ При 0 HP: только /shop и реген\n"
             "🌍 У каждого чата свой мир\n\n"
             "🖤 Доход от рабства:\n"
-            "   Клиент и продавец получают по 0.5🖤 каждые 2ч\n"
-            "   (за каждого раба пока тот в рабстве)\n\n"
+            "   Клиент получает 1🖤 каждые 2ч за каждого раба\n"
+            "   Продавец получает 1🖤 разово при продаже заложника\n\n"
             "🖤 Чёрные монеты = 10💰\n"
             "🥊 Перчатка (3🖤) — x2 урон, 10 ударов\n"
             "⛓️ Наручники (1🖤) — сковать заложника/раба\n"
@@ -1403,13 +1403,12 @@ async def cmd_help(m: types.Message):
             "📡 Глушилка (3🖤) — рабам нужно 10 сапёров для /911 (3 дня)\n"
             "🏠 Дом (100💰+) — 30 уд. защиты, цена растёт на 100💰\n\n"
             "⚡ Если похитителя самого похитят — его заложники и рабы перейдут новому хозяину!\n"
-            "⭐ Успех — снижает КД работы (до 10м при 100%)\n"
-            "   При минусе — увеличивает КД (до 3ч при -100%)\n"
-            "💪 Гигачад — снижает КД спорта (до 30м при 100%)\n"
-            "   При минусе — увеличивает КД спорта (до 3ч при -100%)\n"
-            "🔄 Регенерация — может уйти в минус (реген замедляется до 2ч/HP)\n"
-            "🎯 Косость — шанс промаха при ударе, отпоре и джиу-джитсу\n"
-            "   (всё это может измениться рандомно при ударах)",
+            "⭐ Успех — КД работы: +100%=10м, 0%=1ч, -100%=3ч\n"
+            "💪 Гигачад — КД спорта: +100%=30м, 0%=1.5ч, -100%=3ч\n"
+            "🍀 Удача — шанс побега: +100%=90%, 0%=50%, -100%=10%\n"
+            "🔄 Регенерация — может уйти в минус (реген до 2ч/HP)\n"
+            "🎯 Косость — шанс промаха при ударе, отпоре, джиу-джитсу\n"
+            "   (все статы меняются рандомно при ударах)",
             reply_markup=kb.as_markup()
         )
     except Exception as e:
@@ -1986,21 +1985,21 @@ async def cmd_sell(m: types.Message):
 
         u = await db_task(_get_user, uid, cid, name)
 
-        parts = m.text.split()
+        parts = m.text.split() if m.text else []
         if len(parts) < 2:
             return await m.answer(
-                "⚠️ Использование: /sell <номер заложника> (ответом на игрока-покупателя)\n"
-                "Пример: ответьте на сообщение покупателя и напишите /sell 1"
+                "⚠️ Использование: /sell <номер> (ответом или @тег покупателя)\n"
+                "Пример: /sell 1"
             )
         try:
             num = int(parts[1])
         except ValueError:
-            return await m.answer("❌ Укажите номер")
+            return await m.answer("❌ Укажите номер заложника")
 
         hostages = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
         if not hostages or num < 1 or num > len(hostages):
             cnt = len(hostages) if hostages else 0
-            return await m.answer(f"❌ Заложник #{num} не найден. У вас {cnt} заложник(ов) в подвале.")
+            return await m.answer(f"❌ Заложник #{num} не найден. У вас {cnt} заложник(ов).")
 
         rec = hostages[num - 1]
         now = time.time()
@@ -2011,50 +2010,46 @@ async def cmd_sell(m: types.Message):
         if rec["sold"] != 0:
             return await m.answer("❌ Уже продан или освобождён!")
 
-        # Определяем покупателя
-        if m.reply_to_message and m.reply_to_message.from_user.id != bot.id:
-            buyer = m.reply_to_message.from_user
-            buyer_id = buyer.id
-            buyer_name = clean_nick(buyer.full_name)
-
-            if buyer_id == uid:
-                return await m.answer("❌ Нельзя продать самому себе!")
-            if buyer_id == rec["victim_id"]:
-                return await m.answer("❌ Нельзя продать жертве самой себе!")
-
-            # Убеждаемся что покупатель зарегистрирован
-            await db_task(_get_user, buyer_id, cid, buyer_name)
-            await db_task(_upd_username, buyer_id, cid, buyer_name)
-            b = await db_task(_get_user, buyer_id, cid, buyer_name)
-            buyer_name = b.get("username") or buyer_name
-
-            await db_task(_sell_kidnapped, rec["id"], buyer_id, buyer_name)
-
-            seller_name = u.get("username") or name
-            victim_name = rec["victim_name"]
-
-            await m.answer(
-                f"💰 {seller_name} продал {victim_name} в рабство {buyer_name}!\n"
-                f"Доход {buyer_name}: 1🖤 каждые 2 часа.\n"
-                f"Жертва может сбежать через /freed (сначала в подвал, потом на свободу)."
-            )
-            try:
-                await bot.send_message(
-                    cid,
-                    f"😱 {victim_name} продан(а) в рабство к {buyer_name} за авторством {seller_name}!\n"
-                    f"Используй /freed чтобы сбежать!\n"
-                    f"Порядок побега:\n"
-                    f"1️⃣ Снять наручники (если есть)\n"
-                    f"2️⃣ Сбежать из рабства → подвал {seller_name}\n"
-                    f"3️⃣ Сбежать из подвала → свобода!"
-                )
-            except Exception:
-                pass
-        else:
+        tid, tfull = await resolve_target(m, cid)
+        if not tid:
             return await m.answer(
-                "⚠️ Чтобы продать, ответьте на сообщение игрока-покупателя!\n"
-                "Пример: ответьте на сообщение покупателя и напишите /sell 1"
+                "⚠️ Укажите покупателя: ответом на сообщение или @тег!\n"
+                "Пример: /sell 1 @покупатель"
             )
+        if tid == uid:
+            return await m.answer("❌ Нельзя продать самому себе!")
+        if tid == rec["victim_id"]:
+            return await m.answer("❌ Нельзя продать жертве самой себе!")
+        if tid == bot.id:
+            return await m.answer("❌ Бот не покупает!")
+
+        tname = clean_nick(tfull)
+        await db_task(_get_user, tid, cid, tname)
+        await db_task(_upd_username, tid, cid, tname)
+        buyer = await db_task(_get_user, tid, cid, tname)
+        buyer_name = buyer.get("username") or tname
+        seller_name = u.get("username") or name
+        victim_name = rec["victim_name"]
+
+        # Продаём: клиент получает доход, продавцу сразу +1🖤
+        await db_task(_sell_kidnapped, rec["id"], tid, buyer_name)
+        await async_upd(uid, cid, {"black_money": u["black_money"] + 1})
+
+        await m.answer(
+            f"💰 {seller_name} продал {victim_name} в рабство {buyer_name}!\n"
+            f"🖤 {seller_name} получил 1🖤 за сделку.\n"
+            f"Доход {buyer_name}: 1🖤 каждые 2 часа.\n"
+            f"Жертва может сбежать через /freed."
+        )
+        try:
+            await bot.send_message(
+                cid,
+                f"😱 {victim_name} продан(а) в рабство к {buyer_name}!\n"
+                f"Используй /freed чтобы сбежать.\n"
+                f"Порядок: наручники → рабство → подвал → свобода."
+            )
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"/sell error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка продажи")
@@ -2235,74 +2230,75 @@ async def cmd_give(m: types.Message):
         if tranqed:
             return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
-        if not m.reply_to_message or m.reply_to_message.from_user.id == bot.id:
+        parts = m.text.split() if m.text else []
+        # Формат: /give <N> <coin|black> — цель через reply или @тег
+        # или: /give @тег <N> <coin|black>
+        # Нормализуем: ищем число и валюту среди аргументов
+        amount = None
+        currency = None
+        for p in parts[1:]:
+            if p.startswith("@"):
+                continue
+            if amount is None:
+                try:
+                    amount = int(p)
+                    continue
+                except ValueError:
+                    pass
+            if currency is None and p.lower() in ("coin", "coins", "black", "blacks"):
+                currency = p.lower()
+
+        if amount is None or currency is None:
             return await m.answer(
-                "⚠️ Ответьте на сообщение игрока!\n"
-                "Использование: /give <сумма> <coin|black>\n"
+                "⚠️ Использование: /give <сумма> <coin|black> (ответом или @тег)\n"
                 "Пример: /give 10 coin  или  /give 2 black"
             )
-
-        parts = m.text.split()
-        if len(parts) < 3:
-            return await m.answer(
-                "⚠️ Использование: /give <сумма> <coin|black>\n"
-                "Пример: /give 10 coin  или  /give 2 black"
-            )
-
-        try:
-            amount = int(parts[1])
-        except ValueError:
-            return await m.answer("❌ Сумма должна быть целым числом!")
-
         if amount <= 0:
             return await m.answer("❌ Сумма должна быть больше 0!")
 
-        currency = parts[2].lower()
-        if currency not in ("coin", "black", "coins", "blacks"):
-            return await m.answer("❌ Валюта: coin (монеты) или black (чёрные монеты)")
-
         is_black = currency in ("black", "blacks")
 
-        target = m.reply_to_message.from_user
-        if target.id == uid:
+        tid, tfull = await resolve_target(m, cid)
+        if not tid:
+            return await m.answer("⚠️ Укажите цель: ответом на сообщение или @тег!")
+        if tid == uid:
             return await m.answer("🤡 Нельзя передавать монеты самому себе!")
+        if tid == bot.id:
+            return await m.answer("🤖 Боту монеты не нужны!")
 
-        tname = clean_nick(target.full_name)
-        await db_task(_get_user, target.id, cid, tname)
-        await db_task(_upd_username, target.id, cid, tname)
+        tname = clean_nick(tfull)
+        await db_task(_get_user, tid, cid, tname)
+        await db_task(_upd_username, tid, cid, tname)
 
         u = await db_task(_get_user, uid, cid, name)
-        t = await db_task(_get_user, target.id, cid, tname)
-        target_name = t.get("username") or tname
+        t = await db_task(_get_user, tid, cid, tname)
         sender_name = u.get("username") or name
+        target_name = t.get("username") or tname
 
         if is_black:
             if u["black_money"] < amount:
                 return await m.answer(
-                    f"🖤 Недостаточно чёрных монет!\n"
-                    f"У вас: {u['black_money']}🖤, нужно: {amount}🖤"
+                    f"🖤 Недостаточно! У вас: {u['black_money']}🖤, нужно: {amount}🖤"
                 )
             await async_upd(uid, cid, {"black_money": u["black_money"] - amount})
-            await async_upd(target.id, cid, {"black_money": t["black_money"] + amount})
+            await async_upd(tid, cid, {"black_money": t["black_money"] + amount})
             await m.answer(
-                f"🖤 {sender_name} передал {amount}🖤 игроку {target_name}!\n"
-                f"{sender_name}: {u['black_money'] - amount}🖤\n"
+                f"🖤 {sender_name} передал {amount}🖤 → {target_name}!\n"
+                f"{sender_name}: {u['black_money'] - amount}🖤 | "
                 f"{target_name}: {t['black_money'] + amount}🖤"
             )
         else:
             if u["money"] < amount:
                 return await m.answer(
-                    f"💰 Недостаточно монет!\n"
-                    f"У вас: {u['money']}💰, нужно: {amount}💰"
+                    f"💰 Недостаточно! У вас: {u['money']}💰, нужно: {amount}💰"
                 )
             await async_upd(uid, cid, {"money": u["money"] - amount})
-            await async_upd(target.id, cid, {"money": t["money"] + amount})
+            await async_upd(tid, cid, {"money": t["money"] + amount})
             await m.answer(
-                f"💰 {sender_name} передал {amount}💰 игроку {target_name}!\n"
-                f"{sender_name}: {u['money'] - amount}💰\n"
+                f"💰 {sender_name} передал {amount}💰 → {target_name}!\n"
+                f"{sender_name}: {u['money'] - amount}💰 | "
                 f"{target_name}: {t['money'] + amount}💰"
             )
-
     except Exception as e:
         logger.error(f"/give error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка передачи монет")
