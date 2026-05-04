@@ -913,10 +913,25 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
     # ── Доход от рабов (только как клиент) ──
     slave_income_str = ""
     if slave_list:
-        earliest = min(slave_list, key=lambda x: x["last_income"])
-        elapsed_income = now - earliest["last_income"]
-        next_tick = 7200 - (elapsed_income % 7200)
-        slave_income_str = f"⏳ Следующий доход за рабов: через {format_time(next_tick)} (каждые {format_time(7200)})"
+        ready_count = sum(1 for s in slave_list if (now - s["last_income"]) >= 7200)
+        next_ticks = []
+        for s in slave_list:
+            elapsed_s = now - s["last_income"]
+            next_tick_s = 7200 - (elapsed_s % 7200)
+            next_ticks.append(next_tick_s)
+        
+        nearest = min(next_ticks)
+        
+        if ready_count > 0:
+            slave_income_str = (
+                f"⏳ Готово к выплате: {ready_count}🖤 | "
+                f"Следующий: через {format_time(nearest)}"
+            )
+        else:
+            slave_income_str = (
+                f"⏳ Следующий доход за раба: через {format_time(nearest)} "
+                f"(всего рабов: {len(slave_list)})"
+            )
 
     lines = [
         f"👤 Игрок: {display_name}",
@@ -2574,23 +2589,35 @@ async def income_loop():
                     client_id = rec.get("slave_owner_id", 0)
                     client_name = rec.get("slave_owner_name", "") or "?"
 
+                    logger.info(
+                        f"Income tick: раб={rec['victim_name']} | "
+                        f"клиент={client_name}({client_id}) | "
+                        f"периодов={periods} | elapsed={format_time(elapsed)}"
+                    )
+
                     if client_id and client_id != 0:
                         kd = await db_task(_get_user, client_id, cid, client_name)
-                        new_bm = kd["black_money"] + periods
+                        old_bm = kd["black_money"]
+                        new_bm = old_bm + periods
                         await async_upd(client_id, cid, {"black_money": new_bm})
-                        logger.info(f"Income: {client_name} получил {periods}🖤 за раба {rec['victim_name']}")
+                        logger.info(
+                            f"Income paid: {client_name} "
+                            f"{old_bm}🖤 → {new_bm}🖤 (+{periods})"
+                        )
                         try:
                             await bot.send_message(
                                 cid,
                                 f"🖤 {client_name} получил {periods}🖤 "
-                                f"за раба {rec['victim_name']}!",
+                                f"за раба {rec['victim_name']}!\n"
+                                f"Баланс: {new_bm}🖤",
                                 _no_delete=True
                             )
                         except Exception as e:
-                            logger.error(f"Income send_message error: {e}")
+                            logger.error(f"Income send error: {e}")
 
                     new_last_income = rec["last_income"] + periods * 7200
                     await db_task(_upd_kidnapped_income, rec["id"], new_last_income)
+                    logger.info(f"Income: обновлён last_income для записи {rec['id']}")
 
         except Exception as e:
             logger.error(f"Income loop error: {e}", exc_info=True)
