@@ -24,15 +24,18 @@ dp = Dispatcher()
 job_sessions: dict = {}
 # job_sessions[uid] = {
 #   "chat_id": int,
-#   "type": str,           # тип задания
-#   "answer": str,         # правильный ответ
-#   "msg_id": int,         # id сообщения с заданием
-#   "deadline": float,     # unix time дедлайна
-#   "attempts": int,       # оставшиеся попытки
-#   "reward": int,         # награда монетками
-#   "reward_black": int,   # награда чёрными монетами
-#   "difficulty": str,     # "easy"/"medium"/"hard"
-#   "extra": dict,         # доп данные (для виселицы: слово, угаданные буквы, ошибки)
+#   "series": int,          # номер текущего задания в серии (1-5)
+#   "solved": int,          # сколько решено верно
+#   "current": dict,        # текущее задание (generate_job_task результат)
+#   "type": str,
+#   "answer": str,
+#   "answers": list,
+#   "msg_id": int,
+#   "deadline": float,
+#   "reward": int,          # награда за каждое задание
+#   "difficulty": str,
+#   "job_count": int,
+#   "extra": dict,
 # }
 
 from aiogram import BaseMiddleware
@@ -313,6 +316,20 @@ SAPPER_MINES = [5, 7, 9]  # мины для раунда 1, 2, 3
 DEFAULT_REGEN_TIME = 3600
 
 # ─── БАНК ДАННЫХ ДЛЯ ЗАДАНИЙ ──────────────────────────────────────────────────
+
+# Анаграммы - слова для перемешивания
+ANAGRAM_SOURCE = [
+    "кошка", "собака", "молоко", "дерево", "горизонт",
+    "планета", "солнце", "луна", "звезда", "огонь",
+    "вода", "земля", "ветер", "камень", "цветок",
+    "река", "гора", "лес", "поле", "небо",
+    "птица", "рыба", "конь", "волк", "лиса",
+    "медведь", "орёл", "дракон", "замок", "мост",
+    "корабль", "машина", "поезд", "самолёт", "ракета",
+    "школа", "город", "страна", "народ", "язык",
+    "книга", "слово", "буква", "песня", "музыка",
+    "танец", "театр", "кино", "спорт", "футбол",
+]
 
 # География: {город: (страна, continent_hint)}
 GEO_CITIES = {
@@ -748,6 +765,40 @@ RIDDLES = {
     "В какой стране находится Тадж-Махал?": "индия",
     "Страна, изобретшая бумагу": "китай",
     "Страна, где придумали пиццу": "италия",
+    # Природа
+    "Я тку без рук, вишу без гвоздей, тонкая, но крепкая": "паутина",
+    "Зимой и летом одним цветом": "ель",
+    "Не огонь, а жжётся": "крапива",
+    "Без рук, без ног, а ворота открывает": "ветер",
+    "Маленький, горбатый, всё поле перехватил": "серп",
+    "Кругла, а не месяц, желта, а не масло, сладка, а не сахар": "дыня",
+    "В воде родится, а воды боится": "соль",
+    "Сам не ест, а людей кормит": "плуг",
+    "Летом наедается, зимой высыпается": "медведь",
+    "Не куст, а с листочками, не рубашка, а сшита": "книга",
+    # Логика
+    "Что можно поймать, но нельзя бросить?": "насморк",
+    "Что становится больше, если его перевернуть?": "девятка",
+    "Что идёт, не двигаясь с места?": "время",
+    "Чем больше берёшь, тем больше становится": "яма",
+    "Что есть у коровы спереди и у лошади сзади?": "хвост",
+    "У него есть зубы, но нет рта. Что это?": "расчёска",
+    "Чем длиннее ноги, тем короче жизнь": "свеча",
+    "Всегда перед тобой, но не видишь его": "будущее",
+    "Говорит без рта, слышит без ушей": "эхо",
+    "Никогда не задаёт вопросов, но требует многих ответов": "дверной звонок",
+    # Математика и числа
+    "Сколько месяцев в году имеют 28 дней?": "все",
+    "Если в полдень идёт дождь, через 72 часа будет солнце? Нет, будет": "полночь",
+    "Что всегда увеличивается и никогда не уменьшается?": "возраст",
+    "Чего нет ни в одном океане, но есть во всех морях?": "буква р",
+    "Что имеет руки, но не может хлопать?": "часы",
+    # Предметы
+    "Черный снаружи, красный внутри, а косточки внутри сидят": "арбуз",
+    "Сижу на дереве — красная, круглая, сладкая": "вишня",
+    "Летом — серый, зимой — белый": "заяц",
+    "Без ног, а бежит, без рук, а рукава есть": "река",
+    "Два брата через дорогу живут, а друг друга не видят": "глаза",
 }
 
 # Математические задачи: {уровень: [(выражение, ответ), ...]}
@@ -767,6 +818,21 @@ MATH_EASY = [
     ("360 ÷ 9 + 18 = ?", 58),
     ("23 × 4 + 56 = ?", 148),
     ("(64 + 36) ÷ 4 × 7 = ?", 175),
+    ("99 + 99 + 99 = ?", 297),
+    ("(77 + 33) × 2 = ?", 220),
+    ("500 ÷ 5 - 40 = ?", 60),
+    ("18 × 5 + 10 = ?", 100),
+    ("(90 - 40) × 4 = ?", 200),
+    ("333 + 444 + 111 = ?", 888),
+    ("(16 × 4) - 14 = ?", 50),
+    ("(120 ÷ 6) + 44 = ?", 64),
+    ("77 - 33 + 66 = ?", 110),
+    ("(25 × 4) ÷ 5 = ?", 20),
+    ("14 × 14 - 96 = ?", 100),
+    ("(200 - 125) × 4 = ?", 300),
+    ("81 ÷ 9 × 7 = ?", 63),
+    ("(45 + 55) ÷ 5 × 3 = ?", 60),
+    ("123 + 321 + 56 = ?", 500),
 ]
 
 MATH_MEDIUM = [
@@ -785,6 +851,21 @@ MATH_MEDIUM = [
     ("9² - 8² + 7² - 6² = ?", 30),
     ("(2³ × 3²) + (4² - 2⁴) = ?", 72),
     ("√225 × √64 ÷ √16 = ?", 30),
+    ("4³ - 3³ = ?", 37),
+    ("√(9 × 16) = ?", 12),
+    ("2⁵ + 5² = ?", 57),
+    ("(3! + 4!) ÷ 2 = ?", 15),
+    ("log₂(128) = ?", 7),
+    ("6² + 8² = ?", 100),
+    ("(5² - 3²) × (5² + 3²) = ?", 272),
+    ("2⁷ ÷ 4 = ?", 32),
+    ("√196 + √225 = ?", 29),
+    ("3⁴ - 4³ = ?", 17),
+    ("(2² + 3² + 4²) = ?", 29),
+    ("5! ÷ 4! + 3! = ?", 11),
+    ("√(400 + 225) = ?", 25),
+    ("2³ × 3² × 0 + 100 = ?", 100),
+    ("(10² - 6²) ÷ 4 = ?", 16),
 ]
 
 MATH_HARD = [
@@ -803,19 +884,36 @@ MATH_HARD = [
     ("Среднее арифметическое: 12, 18, 24, 30, 36 = ?", 24),
     ("Диагональ квадрата со стороной 5 = ? × √2 (ответ: число перед √2)", 5),
     ("x² + 5x + 6 = 0, меньший корень = ?", -3),
+    ("Если 5x + 10 = 60, то x = ?", 10),
+    ("Квадрат числа равен 225. Число = ?", 15),
+    ("Сумма 1+2+3+...+10 = ?", 55),
+    ("Угол треугольника 60° и 80°. Третий = ?", 40),
+    ("Скорость 90 км/ч, время 2ч. Расстояние = ? км", 180),
+    ("10% от 350 = ?", 35),
+    ("Стороны 6 и 8. Гипотенуза = ?", 10),
+    ("3x - 5 = 22. x = ?", 9),
+    ("Периметр прямоугольника 36, ширина 6. Длина = ?", 12),
+    ("25% от 200 = ?", 50),
+    ("x² - 7x + 12 = 0, больший корень = ?", 4),
+    ("Объём куба со стороной 3 = ?", 27),
+    ("Сумма первых 5 простых чисел = ?", 28),
+    ("(a+b)² при a=3, b=2 = ?", 25),
+    ("Среднее: 10, 20, 30, 40, 50 = ?", 30),
 ]
 
 DIFFICULTY_REWARDS = {
-    "easy": {"money": 2, "black": 0},
-    "medium": {"money": 4, "black": 0},
-    "hard": {"money": 7, "black": 1},
-    "extreme": {"money": 12, "black": 2},
+    "easy":   {"money": 2},
+    "medium": {"money": 5},
+    "hard":   {"money": 8},
+    "extreme":{"money": 10},
 }
 
+JOB_SERIES_COUNT = 5   # количество заданий в одной серии /job
+
 DIFFICULTY_TIMERS = {
-    "easy": 45,
-    "medium": 60,
-    "hard": 90,
+    "easy":    45,
+    "medium":  60,
+    "hard":    90,
     "extreme": 120,
 }
 
@@ -921,15 +1019,16 @@ def generate_job_task(job_count: int) -> dict:
         "hangman",               # Виселица
         "reverse_capital",       # Назови столицу страны
         "reverse_flag",          # По стране назови флаг (выбор из 4)
+        "anagram",               # Составь слово из букв
     ]
 
     # Веса в зависимости от опыта
     if job_count < 20:
-        weights = [12, 8, 8, 15, 15, 5, 2, 12, 10, 8, 5]
+        weights = [12, 8, 8, 15, 12, 5, 2, 12, 8, 8, 5, 5]
     elif job_count < 60:
-        weights = [10, 10, 10, 12, 12, 10, 5, 10, 10, 8, 3]
+        weights = [10, 10, 10, 12, 10, 8, 5, 10, 8, 8, 4, 5]
     else:
-        weights = [8, 8, 10, 10, 10, 12, 8, 10, 10, 8, 6]
+        weights = [8, 8, 10, 10, 8, 10, 8, 10, 8, 8, 6, 6]
 
     task_type = random.choices(task_types, weights=weights, k=1)[0]
 
@@ -1082,41 +1181,81 @@ def generate_job_task(job_count: int) -> dict:
         "timer": 40,
     }
 
+    # Новый тип: анаграммы
+    if task_type == "anagram":
+        word = random.choice(ANAGRAM_SOURCE)
+        letters = list(word)
+        shuffled = letters[:]
+        while "".join(shuffled) == word and len(word) > 1:
+            random.shuffle(shuffled)
+        random.shuffle(shuffled)
+        scrambled = "".join(shuffled).upper()
+        diff = "hard" if len(word) > 8 else "medium" if len(word) > 5 else "easy"
+        return {
+            "type": "anagram",
+            "question": f"🔤 Составь слово из букв:\n\n`{scrambled}`\n\n(Подсказка: {len(word)} буквы)",
+            "answer": word,
+            "answers": [word],
+            "difficulty": diff,
+            "timer": DIFFICULTY_TIMERS.get(diff, 60),
+        }
+
 
 # ─── ТАЙМЕР ЗАДАНИЙ /JOB ──────────────────────────────────────────────────────
 
 async def job_task_timer(uid: int, cid: int, msg_id: int, deadline: float):
     """
     Ждёт до дедлайна и если задание не выполнено — отмечает провал.
+    При серии заданий — завершает серию с начислением за решённые.
     """
     wait = max(0, deadline - time.time())
     await asyncio.sleep(wait + 1)
-    
+
     if uid not in job_sessions:
         return  # Уже выполнено или сдался
-    
+
     session = job_sessions.pop(uid, None)
     if not session:
         return
-    
-    # Провал по таймеру
+
     try:
         u = await db_task(_get_user, uid, cid, "")
         uname = u.get("username", "Игрок")
+
+        solved = session.get("solved", 0)
+        job_count = session.get("job_count", 0)
+        series = session.get("series", 1)
+
+        # Начисляем за уже решённые задания в серии
+        salary_mult = calc_job_salary(job_count)
+        total_money = max(0, int(solved * 5 * salary_mult))
+        new_money = u["money"] + total_money
+        new_count = job_count + solved
+
+        if solved > 0:
+            await async_upd(uid, cid, {
+                "money": new_money,
+                "last_job": time.time(),
+                "job_count": new_count,
+            })
+
+        correct_ans = session.get("answer", "?")
         await bot.send_message(
             cid,
             f"⏰ {uname}, время вышло!\n"
-            f"Задание не выполнено. Правильный ответ: **{session['answer']}**\n"
-            f"💼 Зарплата не начислена. Кулдаун работы не обнулён.",
-            parse_mode="Markdown"
+            f"Правильный ответ: **{correct_ans}**\n\n"
+            f"🏁 Серия прервана. Решено: {solved}/{JOB_SERIES_COUNT}\n"
+            f"💰 Начислено: {total_money}💰"
+            + ("\n⏳ КД работы запущен." if solved > 0 else ""),
+            parse_mode="Markdown",
         )
-        # Удаляем сообщение с заданием
         try:
             await bot.delete_message(cid, msg_id)
         except Exception:
             pass
     except Exception as e:
         logger.error(f"Job timer error: {e}")
+
 
 
 def _make_board(rows: int, cols: int, mines: int) -> list:
@@ -2370,98 +2509,148 @@ async def cmd_job(m: types.Message):
 
         now = time.time()
         job_cd = calc_job_cooldown(u.get("stat_success", 0))
-        cd = job_cd - (now - (u["last_job"] or 0))
+        cd = job_cd - (now - (u.get("last_job") or 0))
         if cd > 0:
             return await m.answer(f"⏳ Работа доступна через {format_time(cd)}")
 
-        # Если уже есть активная сессия — напоминаем
         if uid in job_sessions:
             return await m.answer("⚠️ У вас уже есть активное задание! Ответьте на него.")
 
         job_count = u.get("job_count", 0)
-        task = generate_job_task(job_count)
-
-        diff = task["difficulty"]
-        reward = DIFFICULTY_REWARDS.get(diff, {"money": 1, "black": 0})
-        salary_mult = calc_job_salary(job_count)
-        reward_money = max(1, int(reward["money"] * salary_mult))
-        reward_black = reward.get("black", 0)
-
-        deadline = now + task["timer"]
-
-        # Для виселицы — особая клавиатура
-        if task["type"] == "hangman":
-            word = task["hangman_word"]
-            guessed = set()
-            kb = _make_hangman_keyboard(uid, word, guessed, 0)
-            display = _hangman_display(word, guessed)
-            art = _hangman_art(0)
-            text = (
-                f"💼 Задание ({diff})!\n\n"
-                f"{task['question']}\n\n"
-                f"{art}\n`{display}`\n\n"
-                f"Награда: +{reward_money}💰"
-                + (f" +{reward_black}🖤" if reward_black else "")
-                + f"\n⏰ Попыток по букве, таймер: {format_time(task['timer'])}"
-            )
-            sent = await m.answer(text, reply_markup=kb, parse_mode="Markdown")
-        elif task["type"] == "reverse_flag":
-            # Кнопки с вариантами флагов
-            builder = InlineKeyboardBuilder()
-            for flag_em, country_name in task["options"]:
-                builder.button(text=flag_em, callback_data=f"job_flag:{uid}:{flag_em}")
-            builder.button(text="❌ Сдаться", callback_data=f"job_give_up:{uid}")
-            builder.adjust(4)
-            text = (
-                f"💼 Задание ({diff})!\n\n"
-                f"{task['question']}\n\n"
-                f"Выбери флаг из вариантов ниже 👇\n"
-                f"Награда: +{reward_money}💰"
-                + (f" +{reward_black}🖤" if reward_black else "")
-                + f"\n⏰ {format_time(task['timer'])}"
-            )
-            sent = await m.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
-        else:
-            kb = _make_job_keyboard(uid)
-            text = (
-                f"💼 Задание ({diff})!\n\n"
-                f"{task['question']}\n\n"
-                f"Награда: +{reward_money}💰"
-                + (f" +{reward_black}🖤" if reward_black else "")
-                + f"\n⏰ Времени: {format_time(task['timer'])}\n\n"
-                f"Напишите ответ в чат."
-            )
-            sent = await m.answer(text, reply_markup=kb, parse_mode="Markdown")
-
-        job_sessions[uid] = {
-            "chat_id": cid,
-            "type": task["type"],
-            "answer": task["answer"],
-            "answers": task.get("answers", [task["answer"]]),
-            "msg_id": sent.message_id,
-            "deadline": deadline,
-            "reward": reward_money,
-            "reward_black": reward_black,
-            "difficulty": diff,
-            "job_count": job_count,
-            "extra": {
-                "hangman_word": task.get("hangman_word", ""),
-                "guessed": set(),
-                "errors": 0,
-                "max_errors": task.get("max_errors", 6),
-                "correct_flag": task.get("correct_flag", ""),
-                "options": task.get("options", []),
-            },
-        }
-
-        # Запускаем таймер
-        asyncio.create_task(job_task_timer(uid, cid, sent.message_id, deadline))
+        await _start_job_task(m, uid, cid, job_count, series=1, solved=0)
 
     except Exception as e:
         logger.error(f"/job error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка работы")
 
+
 # ─── /sport ───────────────────────────────────────────────────────────────────
+
+async def _start_job_task(
+    m: types.Message,
+    uid: int,
+    cid: int,
+    job_count: int,
+    series: int,
+    solved: int,
+):
+    """Генерирует и отправляет одно задание из серии."""
+    task = generate_job_task(job_count)
+    diff = task["difficulty"]
+    reward_money = DIFFICULTY_REWARDS.get(diff, {"money": 2})["money"]
+
+    now = time.time()
+    deadline = now + task["timer"]
+
+    if task["type"] == "hangman":
+        word = task["hangman_word"]
+        guessed: set = set()
+        kb = _make_hangman_keyboard(uid, word, guessed, 0)
+        display = _hangman_display(word, guessed)
+        art = _hangman_art(0)
+        text = (
+            f"💼 Серия заданий [{series}/{JOB_SERIES_COUNT}] | Решено: {solved}\n"
+            f"Сложность: {diff}\n\n"
+            f"{task['question']}\n\n"
+            f"{art}\n`{display}`\n\n"
+            f"Награда за задание: {reward_money}💰\n"
+            f"⏰ Таймер: {format_time(task['timer'])}"
+        )
+        sent = await m.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+    elif task["type"] == "reverse_flag":
+        builder = InlineKeyboardBuilder()
+        for flag_em, country_name in task["options"]:
+            builder.button(
+                text=flag_em,
+                callback_data=f"job_flag:{uid}:{flag_em}"
+            )
+        builder.button(text="❌ Сдаться", callback_data=f"job_give_up:{uid}")
+        builder.adjust(4)
+        text = (
+            f"💼 Серия заданий [{series}/{JOB_SERIES_COUNT}] | Решено: {solved}\n"
+            f"Сложность: {diff}\n\n"
+            f"{task['question']}\n\n"
+            f"Выбери флаг 👇\n"
+            f"Награда за задание: {reward_money}💰\n"
+            f"⏰ {format_time(task['timer'])}"
+        )
+        sent = await m.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+    else:
+        kb = _make_job_keyboard(uid)
+        text = (
+            f"💼 Серия заданий [{series}/{JOB_SERIES_COUNT}] | Решено: {solved}\n"
+            f"Сложность: {diff}\n\n"
+            f"{task['question']}\n\n"
+            f"Награда за задание: {reward_money}💰\n"
+            f"⏰ Времени: {format_time(task['timer'])}\n\n"
+            f"Напишите ответ в чат."
+        )
+        sent = await m.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+    job_sessions[uid] = {
+        "chat_id": cid,
+        "series": series,
+        "solved": solved,
+        "current": task,
+        "type": task["type"],
+        "answer": task["answer"],
+        "answers": task.get("answers", [task["answer"]]),
+        "msg_id": sent.message_id,
+        "deadline": deadline,
+        "reward": reward_money,
+        "difficulty": diff,
+        "job_count": job_count,
+        "extra": {
+            "hangman_word": task.get("hangman_word", ""),
+            "guessed": set(),
+            "errors": 0,
+            "max_errors": task.get("max_errors", 6),
+            "correct_flag": task.get("correct_flag", ""),
+            "options": task.get("options", []),
+        },
+    }
+
+    asyncio.create_task(
+        job_task_timer(uid, cid, sent.message_id, deadline)
+    )
+
+
+async def _finish_job_series(
+    m_or_call,
+    uid: int,
+    cid: int,
+    solved: int,
+    job_count: int,
+    is_call: bool = False,
+):
+    """Завершает серию из 5 заданий, начисляет награду."""
+    salary_mult = calc_job_salary(job_count)
+    avg_reward = 5
+    total_money = max(0, int(solved * avg_reward * salary_mult))
+
+    u = await db_task(_get_user, uid, cid, "")
+    new_money = u["money"] + total_money
+    new_count = job_count + solved
+
+    await async_upd(uid, cid, {
+        "money": new_money,
+        "last_job": time.time(),
+        "job_count": new_count,
+    })
+
+    text = (
+        f"🏁 Серия завершена!\n"
+        f"✅ Решено: {solved}/{JOB_SERIES_COUNT}\n"
+        f"💰 Заработано: +{total_money}💰\n"
+        f"💼 Всего работ: {new_count}"
+    )
+    if is_call:
+        await m_or_call.message.answer(text)
+    else:
+        await m_or_call.answer(text)
+
 
 @dp.message(Command("sport"))
 async def cmd_sport(m: types.Message):
