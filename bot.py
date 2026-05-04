@@ -18,6 +18,20 @@ DB_PATH = DATA_DIR / "bot.db"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+from aiogram import BaseMiddleware
+from aiogram.types import TelegramObject
+
+class AutoDeleteMiddleware(BaseMiddleware):
+    """Удаляет входящее сообщение с командой через 5 минут."""
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        result = await handler(event, data)
+        if isinstance(event, types.Message) and event.text and event.text.startswith("/"):
+            asyncio.create_task(_delete_later(event.chat.id, event.message_id))
+        return result
+
+dp.message.middleware(AutoDeleteMiddleware())
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -132,37 +146,55 @@ POOP_TEXTS = [
 ]
 
 STAT_NAMES = {
-    "stat_regen": "Регенерация", "stat_counter": "Отпор",
-    "stat_block": "Блок", "stat_jiu": "Джиу-джитсу",
+    "stat_regen": "Регенерация",
+    "stat_counter": "Отпор",
+    "stat_block": "Блок",
+    "stat_jiu": "Джиу-джитсу",
     "stat_success": "Успех",
-    "debuff_weak": "Слабость", "debuff_fear": "Страх",
-    "debuff_payoff": "Откуп", "debuff_crisis": "Кризис",
+    "stat_gigachad": "Гигачад",
+    "debuff_weak": "Слабость",
+    "debuff_fear": "Страх",
+    "debuff_payoff": "Откуп",
+    "debuff_cross": "Косость",
 }
 
-POSITIVE_STATS = ["stat_regen", "stat_counter", "stat_block", "stat_jiu", "stat_success"]
-ALL_STATS = POSITIVE_STATS + ["debuff_weak", "debuff_fear", "debuff_payoff", "debuff_crisis"]
+POSITIVE_STATS = ["stat_regen", "stat_counter", "stat_block", "stat_jiu", "stat_success", "stat_gigachad"]
+ALL_STATS = POSITIVE_STATS + ["debuff_weak", "debuff_fear", "debuff_payoff", "debuff_cross"]
 
-BASE_JOB_COOLDOWN = 3600  # базовый кд работы 1 час
+BASE_JOB_COOLDOWN = 3600
+BASE_SPORT_COOLDOWN = 5400
 
-def calc_job_cooldown(success: int, crisis: int) -> int:
-    """Считает актуальный кд работы с учётом успеха и кризиса."""
-    base = BASE_JOB_COOLDOWN
-    # Успех снижает кд: при 100% успеха кд = 10 минут (600с)
-    # Линейно: base - (base - 600) * success/100
-    after_success = base - int((base - 600) * success / 100)
-    # Кризис увеличивает кд: при 100% кризиса кд = 3 часа (10800с)
-    # Линейно добавляет до +7200с
-    after_crisis = after_success + int(7200 * crisis / 100)
-    return max(600, after_crisis)
+def calc_job_cooldown(success: int) -> int:
+    """
+    success может быть от -100 до 100.
+    При 100%  → 600с  (10 минут)
+    При 0%    → 3600с (1 час)
+    При -100% → 10800с (3 часа)
+    Линейно в двух участках: [0..100] и [-100..0]
+    """
+    if success >= 0:
+        return int(BASE_JOB_COOLDOWN - (BASE_JOB_COOLDOWN - 600) * success / 100)
+    else:
+        return int(BASE_JOB_COOLDOWN + (10800 - BASE_JOB_COOLDOWN) * (-success) / 100)
+
+def calc_sport_cooldown(gigachad: int) -> int:
+    """
+    gigachad может быть от -100 до 100.
+    При 100%  → 1800с (30 минут)
+    При 0%    → 5400с (1.5 часа)
+    При -100% → 10800с (3 часа)
+    """
+    if gigachad >= 0:
+        return int(BASE_SPORT_COOLDOWN - (BASE_SPORT_COOLDOWN - 1800) * gigachad / 100)
+    else:
+        return int(BASE_SPORT_COOLDOWN + (10800 - BASE_SPORT_COOLDOWN) * (-gigachad) / 100)
 
 def calc_job_salary(job_count: int) -> float:
-    """Считает зарплату по количеству отработанных раз."""
     if job_count < 50:
         return 1.0
-    elif job_count < 150:   # 50+100
+    elif job_count < 150:
         return 1.5
     else:
-        # каждые 100 после 150 дают +0.5
         extra = (job_count - 150) // 100
         return 2.0 + extra * 0.5
 
@@ -276,7 +308,16 @@ def _reveal_cascade(board, revealed, r, c, rows, cols):
                     stack.append((cr + dr, cc + dc))
 
 def calc_regen_time(stat_regen: int) -> float:
-    return max(60, DEFAULT_REGEN_TIME * (1 - stat_regen / 100))
+    """
+    stat_regen может быть от -100 до 100.
+    При 100%  → 60с
+    При 0%    → 3600с
+    При -100% → 7200с
+    """
+    if stat_regen >= 0:
+        return max(60, DEFAULT_REGEN_TIME * (1 - stat_regen / 100))
+    else:
+        return min(7200, DEFAULT_REGEN_TIME * (1 + (-stat_regen) / 100))
 
 def format_time(seconds: float) -> str:
     seconds = int(max(0, seconds))
@@ -310,16 +351,14 @@ COL_DEFAULTS = {
     "shield": 0, "last_punch": 0.0, "last_job": 0.0,
     "last_sport": 0.0, "last_hp_update": 0.0, "last_freed": 0.0,
     "stat_regen": 0, "stat_counter": 0, "stat_block": 0, "stat_jiu": 0,
-    "debuff_weak": 0, "debuff_fear": 0, "debuff_payoff": 0,
+    "stat_success": 0, "stat_gigachad": 0,
+    "debuff_weak": 0, "debuff_fear": 0, "debuff_payoff": 0, "debuff_cross": 0,
     "casino_won": 0, "glove_durability": 0, "handcuffs": 0,
     "tranq_until": 0.0, "adren_until": 0.0, "tranq_stock": 0,
     "jailed_until": 0.0, "last_911": 0.0,
     "jammer_until": 0.0,
-    "stat_success": 0,
-    "debuff_crisis": 0,
     "job_count": 0,
-    "house_hp": 0,
-    "house_bought": 0,
+    "house_hp": 0, "house_bought": 0,
 }
 COL_NAMES = list(COL_DEFAULTS.keys())
 
@@ -393,7 +432,8 @@ def init_db():
             "last_911": "REAL DEFAULT 0",
             "jammer_until": "REAL DEFAULT 0",
             "stat_success": "INTEGER DEFAULT 0",
-            "debuff_crisis": "INTEGER DEFAULT 0",
+            "stat_gigachad": "INTEGER DEFAULT 0",
+            "debuff_cross": "INTEGER DEFAULT 0",
             "job_count": "INTEGER DEFAULT 0",
             "house_hp": "INTEGER DEFAULT 0",
             "house_bought": "INTEGER DEFAULT 0",
@@ -488,6 +528,20 @@ def _recalc_hp(uid: int, cid: int) -> dict:
 async def db_task(func, *args):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, func, *args)
+
+async def _delete_later(chat_id: int, message_id: int, delay: int = 300):
+    """Удаляет сообщение через delay секунд (по умолчанию 5 минут)."""
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+
+async def reply_and_delete(m: types.Message, text: str, delay: int = 300, **kwargs):
+    """Отправляет ответ и удаляет его через delay секунд."""
+    sent = await m.answer(text, **kwargs)
+    asyncio.create_task(_delete_later(m.chat.id, sent.message_id, delay))
+    return sent
 
 async def async_upd(uid: int, cid: int, fields: dict):
     await db_task(_upd_user, uid, cid, fields)
@@ -748,7 +802,7 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
     house_str = f"{u.get('house_hp', 0)}/30" if u.get("house_hp", 0) > 0 else "нет"
 
     # ── Работа ──
-    job_cd_val = calc_job_cooldown(u.get("stat_success", 0), u.get("debuff_crisis", 0))
+    job_cd_val = calc_job_cooldown(u.get("stat_success", 0))
     job_elapsed = max(0, now - (u["last_job"] or 0))
     job_cd_left = job_cd_val - job_elapsed
     if job_cd_left > 0:
@@ -1290,7 +1344,7 @@ async def cmd_job(m: types.Message):
             return await m.answer("💀 0 HP! Нельзя работать")
 
         now = time.time()
-        job_cd = calc_job_cooldown(u.get("stat_success", 0), u.get("debuff_crisis", 0))
+        job_cd = calc_job_cooldown(u.get("stat_success", 0))
         cd = job_cd - (now - (u["last_job"] or 0))
         if cd > 0:
             return await m.answer(f"⏳ Работа доступна через {format_time(cd)}")
