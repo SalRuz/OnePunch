@@ -1056,23 +1056,15 @@ def generate_job_task(job_count: int) -> dict:
         }
 
     elif task_type == "hangman":
-        # Виселица — выбираем слово по сложности
-        if job_count < 20:
-            pool = [w for w in HANGMAN_WORDS if w[3] == "easy"]
-        elif job_count < 50:
-            pool = [w for w in HANGMAN_WORDS if w[3] in ("easy", "medium")]
-        else:
-            pool = HANGMAN_WORDS
-        if not pool:
-            pool = HANGMAN_WORDS
-        word, hint, category, diff = random.choice(pool)
+        word = random.choice(HANGMAN_WORDS)
+        diff = "hard" if len(word) > 12 else "medium" if len(word) > 7 else "easy"
         return {
             "type": "hangman",
-            "question": f"🎰 Угадай слово!\n\n{hint}\nКатегория: {category}",
+            "question": f"🎰 Угадай слово по буквам!\n(Категория: IT/программирование)",
             "answer": word.lower(),
             "answers": [word.lower()],
             "difficulty": diff,
-            "timer": DIFFICULTY_TIMERS.get(diff, 90) * 3,  # У виселицы нет таймера хода
+            "timer": DIFFICULTY_TIMERS.get(diff, 90) * 3,
             "hangman_word": word.lower(),
             "guessed": [],
             "errors": 0,
@@ -2382,38 +2374,89 @@ async def cmd_job(m: types.Message):
         if cd > 0:
             return await m.answer(f"⏳ Работа доступна через {format_time(cd)}")
 
-        salary = calc_job_salary(u.get("job_count", 0))
-        new_job_count = u.get("job_count", 0) + 1
+        # Если уже есть активная сессия — напоминаем
+        if uid in job_sessions:
+            return await m.answer("⚠️ У вас уже есть активное задание! Ответьте на него.")
 
-        # Добавляем деньги (дробные копим через money как float? нет — храним *2 или просто int)
-        # Используем целые: 1.5 → каждые 2 работы +3, то есть накапливаем через black_money нет
-        # Проще: храним монеты как int*10 внутри, но это сломает магазин.
-        # Решение: salary rounded, каждые 2 работы при 1.5 дают +1 и +2 поочерёдно
-        # Простейший способ: floor, но при 1.5 каждая 2-я работа даёт доп монету
-        base_earn = int(salary)
-        bonus = 1 if (new_job_count % 2 == 0 and salary != int(salary)) else 0
-        earned = base_earn + bonus
+        job_count = u.get("job_count", 0)
+        task = generate_job_task(job_count)
 
-        new_money = u["money"] + earned
-        await async_upd(uid, cid, {
-            "money": new_money,
-            "last_job": now,
-            "job_count": new_job_count,
-        })
+        diff = task["difficulty"]
+        reward = DIFFICULTY_REWARDS.get(diff, {"money": 1, "black": 0})
+        salary_mult = calc_job_salary(job_count)
+        reward_money = max(1, int(reward["money"] * salary_mult))
+        reward_black = reward.get("black", 0)
 
-        # Сообщение о повышении зарплаты
-        promo_msg = ""
-        old_salary = calc_job_salary(u.get("job_count", 0))
-        new_salary = calc_job_salary(new_job_count)
-        if new_salary > old_salary:
-            promo_msg = f"\n🎉 Повышение! Новая зарплата: {new_salary}💰/раз"
+        deadline = now + task["timer"]
 
-        await m.answer(
-            f"💼 {u['username']} заработал +{earned}💰\n"
-            f"Баланс: {new_money}💰 | Работ всего: {new_job_count}\n"
-            f"Зарплата: {calc_job_salary(new_job_count)}💰"
-            + promo_msg
-        )
+        # Для виселицы — особая клавиатура
+        if task["type"] == "hangman":
+            word = task["hangman_word"]
+            guessed = set()
+            kb = _make_hangman_keyboard(uid, word, guessed, 0)
+            display = _hangman_display(word, guessed)
+            art = _hangman_art(0)
+            text = (
+                f"💼 Задание ({diff})!\n\n"
+                f"{task['question']}\n\n"
+                f"{art}\n`{display}`\n\n"
+                f"Награда: +{reward_money}💰"
+                + (f" +{reward_black}🖤" if reward_black else "")
+                + f"\n⏰ Попыток по букве, таймер: {format_time(task['timer'])}"
+            )
+            sent = await m.answer(text, reply_markup=kb, parse_mode="Markdown")
+        elif task["type"] == "reverse_flag":
+            # Кнопки с вариантами флагов
+            builder = InlineKeyboardBuilder()
+            for flag_em, country_name in task["options"]:
+                builder.button(text=flag_em, callback_data=f"job_flag:{uid}:{flag_em}")
+            builder.button(text="❌ Сдаться", callback_data=f"job_give_up:{uid}")
+            builder.adjust(4)
+            text = (
+                f"💼 Задание ({diff})!\n\n"
+                f"{task['question']}\n\n"
+                f"Выбери флаг из вариантов ниже 👇\n"
+                f"Награда: +{reward_money}💰"
+                + (f" +{reward_black}🖤" if reward_black else "")
+                + f"\n⏰ {format_time(task['timer'])}"
+            )
+            sent = await m.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+        else:
+            kb = _make_job_keyboard(uid)
+            text = (
+                f"💼 Задание ({diff})!\n\n"
+                f"{task['question']}\n\n"
+                f"Награда: +{reward_money}💰"
+                + (f" +{reward_black}🖤" if reward_black else "")
+                + f"\n⏰ Времени: {format_time(task['timer'])}\n\n"
+                f"Напишите ответ в чат."
+            )
+            sent = await m.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+        job_sessions[uid] = {
+            "chat_id": cid,
+            "type": task["type"],
+            "answer": task["answer"],
+            "answers": task.get("answers", [task["answer"]]),
+            "msg_id": sent.message_id,
+            "deadline": deadline,
+            "reward": reward_money,
+            "reward_black": reward_black,
+            "difficulty": diff,
+            "job_count": job_count,
+            "extra": {
+                "hangman_word": task.get("hangman_word", ""),
+                "guessed": set(),
+                "errors": 0,
+                "max_errors": task.get("max_errors", 6),
+                "correct_flag": task.get("correct_flag", ""),
+                "options": task.get("options", []),
+            },
+        }
+
+        # Запускаем таймер
+        asyncio.create_task(job_task_timer(uid, cid, sent.message_id, deadline))
+
     except Exception as e:
         logger.error(f"/job error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка работы")
@@ -2510,6 +2553,220 @@ async def cmd_shop(m: types.Message):
 @dp.callback_query(lambda c: c.data.startswith("shop:"))
 async def shop_h(call: types.CallbackQuery):
     await shop_cb(call)
+
+# ─── ОБРАБОТЧИК ОТВЕТОВ НА ЗАДАНИЯ /JOB ──────────────────────────────────────
+
+@dp.message()
+async def handle_job_answer(m: types.Message):
+    uid = m.from_user.id
+    cid = m.chat.id
+    if uid not in job_sessions:
+        return
+    session = job_sessions[uid]
+    if session["chat_id"] != cid:
+        return
+    if not m.text or m.text.startswith("/"):
+        return
+
+    user_ans = m.text.strip()
+    correct = fuzzy_match_any(user_ans, session["answers"])
+
+    if correct:
+        job_sessions.pop(uid, None)
+        u = await db_task(_get_user, uid, cid, "")
+        new_count = session["job_count"] + 1
+        new_money = u["money"] + session["reward"]
+        new_black = u["black_money"] + session["reward_black"]
+        await async_upd(uid, cid, {
+            "money": new_money,
+            "black_money": new_black,
+            "last_job": time.time(),
+            "job_count": new_count,
+        })
+        try:
+            await m.bot.delete_message(cid, session["msg_id"])
+        except Exception:
+            pass
+        reward_str = f"+{session['reward']}💰"
+        if session["reward_black"]:
+            reward_str += f" +{session['reward_black']}🖤"
+        await m.answer(
+            f"✅ Правильно! {reward_str}\n"
+            f"💰 Баланс: {new_money} | Работ: {new_count}"
+        )
+    else:
+        await m.answer(f"❌ Неверно, попробуй ещё раз!")
+
+# ─── CALLBACK ДЛЯ ЗАДАНИЙ (флаги, виселица, сдаться) ─────────────────────────
+
+@dp.callback_query(lambda c: c.data.startswith("job_"))
+async def job_callback_handler(call: types.CallbackQuery):
+    uid = call.from_user.id
+    cid = call.message.chat.id
+    
+    if uid not in job_sessions:
+        return await call.answer("⏰ Задание уже завершено!", show_alert=True)
+    
+    session = job_sessions[uid]
+    if session["chat_id"] != cid:
+        return await call.answer("❌ Не ваше задание!", show_alert=True)
+    
+    data = call.data.split(":")
+    action = data[0]
+    
+    # Сдаться
+    if action == "job_give_up":
+        job_sessions.pop(uid, None)
+        try:
+            await call.message.delete()
+        except Exception:
+            pass
+        await call.answer("🏳️ Вы сдались. Задание отменено.", show_alert=True)
+        return
+    
+    # Выбор флага для reverse_flag
+    if action == "job_flag":
+        selected_flag = data[2] if len(data) > 2 else ""
+        correct_flag = session["extra"].get("correct_flag", "")
+        
+        if selected_flag == correct_flag:
+            job_sessions.pop(uid, None)
+            u = await db_task(_get_user, uid, cid, "")
+            new_count = session["job_count"] + 1
+            new_money = u["money"] + session["reward"]
+            new_black = u["black_money"] + session["reward_black"]
+            await async_upd(uid, cid, {
+                "money": new_money,
+                "black_money": new_black,
+                "last_job": time.time(),
+                "job_count": new_count,
+            })
+            try:
+                await call.message.delete()
+            except Exception:
+                pass
+            reward_str = f"+{session['reward']}💰"
+            if session["reward_black"]:
+                reward_str += f" +{session['reward_black']}🖤"
+            await call.answer(f"✅ Правильно! {reward_str}", show_alert=True)
+        else:
+            await call.answer("❌ Неверный флаг! Попробуй ещё раз.", show_alert=True)
+        return
+    
+    await call.answer()
+
+# ─── CALLBACK ДЛЯ ВИСЕЛИЦЫ ────────────────────────────────────────────────────
+
+@dp.callback_query(lambda c: c.data.startswith("hm:"))
+async def hangman_callback_handler(call: types.CallbackQuery):
+    uid = call.from_user.id
+    cid = call.message.chat.id
+    
+    if uid not in job_sessions:
+        return await call.answer("⏰ Игра уже завершена!", show_alert=True)
+    
+    session = job_sessions[uid]
+    if session["chat_id"] != cid:
+        return await call.answer("❌ Не ваша игра!", show_alert=True)
+    
+    if session["type"] != "hangman":
+        return await call.answer()
+    
+    data = call.data.split(":")
+    letter = data[2] if len(data) > 2 else ""
+    
+    if not letter or len(letter) != 1:
+        return await call.answer()
+    
+    extra = session["extra"]
+    guessed = extra.get("guessed", set())
+    errors = extra.get("errors", 0)
+    max_errors = extra.get("max_errors", 6)
+    word = extra.get("hangman_word", "")
+    
+    if letter in guessed:
+        return await call.answer("Эта буква уже была!", show_alert=False)
+    
+    guessed.add(letter)
+    extra["guessed"] = guessed
+    
+    # Проверяем букву
+    if letter not in word.lower():
+        errors += 1
+        extra["errors"] = errors
+    
+    # Обновляем отображение
+    display = _hangman_display(word, guessed)
+    art = _hangman_art(errors)
+    
+    # Проверяем победу
+    all_guessed = all(ch in guessed or ch in '- ' for ch in word.lower())
+    
+    if all_guessed:
+        job_sessions.pop(uid, None)
+        u = await db_task(_get_user, uid, cid, "")
+        new_count = session["job_count"] + 1
+        new_money = u["money"] + session["reward"]
+        new_black = u["black_money"] + session["reward_black"]
+        await async_upd(uid, cid, {
+            "money": new_money,
+            "black_money": new_black,
+            "last_job": time.time(),
+            "job_count": new_count,
+        })
+        try:
+            await call.message.edit_text(
+                f"✅ Победа! Слово: **{word.upper()}**\n\n"
+                f"{art}\n`{display}`\n\n"
+                f"Награда: +{session['reward']}💰"
+                + (f" +{session['reward_black']}🖤" if session["reward_black"] else ""),
+                reply_markup=None,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            try:
+                await call.message.delete()
+            except Exception:
+                pass
+        await call.answer(f"✅ Угадал! +{session['reward']}💰", show_alert=False)
+        return
+    
+    # Проверяем поражение
+    if errors >= max_errors:
+        job_sessions.pop(uid, None)
+        try:
+            await call.message.edit_text(
+                f"💀 Проигрыш! Слово было: **{word.upper()}**\n\n"
+                f"{art}\n`{display}`",
+                reply_markup=None,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            try:
+                await call.message.delete()
+            except Exception:
+                pass
+        await call.answer(f"💀 Много ошибок! Слово: {word}", show_alert=True)
+        return
+    
+    # Обновляем клавиатуру
+    kb = _make_hangman_keyboard(uid, word, guessed, errors)
+    
+    text = (
+        f"💼 Задание ({session['difficulty']})!\n\n"
+        f"{session.get('question', 'Угадай слово!')}\n\n"
+        f"{art}\n`{display}`\n\n"
+        f"Ошибок: {errors}/{max_errors}\n"
+        f"Награда: +{session['reward']}💰"
+        + (f" +{session['reward_black']}🖤" if session["reward_black"] else "")
+    )
+    
+    try:
+        await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        pass
+    
+    await call.answer()
 
 # ─── /casino ──────────────────────────────────────────────────────────────────
 
