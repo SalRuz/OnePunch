@@ -241,18 +241,16 @@ def calc_sport_cooldown(gigachad: int) -> int:
 
 def calc_escape_chance(stat_luck: int) -> int:
     """
-    Базовый шанс побега 50%.
     stat_luck от -100 до 100.
-    При +100 → 90%
+    При +100 → 100%
     При 0    → 50%
-    При -100 → 10%
-    Линейно.
+    При -100 → 5%
+    Линейно в двух участках.
     """
-    base = 50
     if stat_luck >= 0:
-        return min(90, base + int(40 * stat_luck / 100))
+        return min(100, 50 + int(50 * stat_luck / 100))
     else:
-        return max(10, base + int(40 * stat_luck / 100))
+        return max(5, 50 + int(45 * stat_luck / 100))
 
 def calc_job_salary(job_count: int) -> float:
     if job_count < 50:
@@ -1905,7 +1903,7 @@ async def cmd_freed(m: types.Message):
 
             # Снятие наручников
             if rec["handcuffed"]:
-                if random.randint(1, 100) <= escape_chance:
+                if escape_chance >= 100 or random.randint(1, 100) <= escape_chance:
                     await db_task(_set_handcuffed, rec["id"], 0)
                     return await m.answer(
                         f"⛓️ {display} снял наручники в рабстве у {owner_name}!\n"
@@ -1919,7 +1917,7 @@ async def cmd_freed(m: types.Message):
                     )
 
             # Побег из рабства в подвал клиента
-            if random.randint(1, 100) <= escape_chance:
+            if escape_chance >= 100 or random.randint(1, 100) <= escape_chance:
                 client_id = rec.get("slave_owner_id", 0)
                 client_name = rec.get("slave_owner_name", "?")
                 await db_task(_escape_from_slavery, rec["id"], client_id, client_name)
@@ -1940,7 +1938,7 @@ async def cmd_freed(m: types.Message):
 
         # Снятие наручников
         if rec["handcuffed"]:
-            if random.randint(1, 100) <= escape_chance:
+            if escape_chance >= 100 or random.randint(1, 100) <= escape_chance:
                 await db_task(_set_handcuffed, rec["id"], 0)
                 return await m.answer(
                     f"⛓️ {display} снял наручники в подвале {kidnapper_name}!\n"
@@ -1954,7 +1952,7 @@ async def cmd_freed(m: types.Message):
                 )
 
         # Финальный побег
-        if random.randint(1, 100) <= escape_chance:
+        if escape_chance >= 100 or random.randint(1, 100) <= escape_chance:
             await db_task(_free_kidnapped, rec["id"])
             await m.answer(
                 f"🏃 {display} окончательно сбежал из подвала {kidnapper_name}! "
