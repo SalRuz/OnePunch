@@ -897,17 +897,21 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
         f"⏳  КД работы: {job_str} (полный: {format_time(job_cd_val)})",
         "",
         "📈 Навыки:",
-        f"   🔄 Регенерация:  {u['stat_regen']}%",
+        f"   🔄 Регенерация:  {u['stat_regen']}%"
+        + (f" ⚠️ (реген: {format_time(calc_regen_time(u['stat_regen']))})" if u['stat_regen'] < 0 else ""),
         f"   🥊 Отпор:        {u['stat_counter']}%",
         f"   🛡️ Блок:         {u['stat_block']}%",
         f"   🥋 Джиу-джитсу: {u['stat_jiu']}%",
-        f"   ⭐ Успех:        {u.get('stat_success', 0)}%",
+        f"   ⭐ Успех:        {u.get('stat_success', 0)}%"
+        + (f" (КД работы: {format_time(calc_job_cooldown(u.get('stat_success',0)))})" if u.get('stat_success',0) != 0 else ""),
+        f"   💪 Гигачад:      {u.get('stat_gigachad', 0)}%"
+        + (f" (КД спорта: {format_time(calc_sport_cooldown(u.get('stat_gigachad',0)))})" if u.get('stat_gigachad',0) != 0 else ""),
         "",
         "📉 Дебаффы:",
         f"   🦠 Слабость: {u['debuff_weak']}%",
         f"   😨 Страх:    {u['debuff_fear']}%",
         f"   💸 Откуп:    {u['debuff_payoff']}%",
-        f"   📉 Кризис:   {u.get('debuff_crisis', 0)}%",
+        f"   🎯 Косость:  {u.get('debuff_cross', 0)}%",
         "",
         f"🎰 Выиграно в казино: {u['casino_won']}💰",
     ]
@@ -934,34 +938,84 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
             cd = punch_cd - (now - (att["last_punch"] or 0))
             if cd > 0:
                 adren_note = " (🔥 адреналин)" if att.get("adren_until", 0) > now else ""
-                return await bot.send_message(
+                msg = await bot.send_message(
                     cid, f"⏳ {att['username']}, кулдаун{adren_note}: {format_time(cd)}"
                 )
+                asyncio.create_task(_delete_later(cid, msg.message_id))
+                return
+
+        # ── Косость атакующего — шанс промаха ──
+        cross = att.get("debuff_cross", 0)
+        if cross > 0 and random.randint(1, 100) <= cross:
+            msg = await bot.send_message(
+                cid,
+                f"🎯 {att['username']} промахнулся! (косость {cross}%)"
+            )
+            asyncio.create_task(_delete_later(cid, msg.message_id))
+            if not auto:
+                await async_upd(aid, cid, {"last_punch": now})
+            return
 
         if vic["shield"] == 1:
             await async_upd(vid, cid, {"shield": 0})
-            return await bot.send_message(cid, f"🛡️ Щит {vic['username']} поглотил удар!")
+            msg = await bot.send_message(cid, f"🛡️ Щит {vic['username']} поглотил удар!")
+            asyncio.create_task(_delete_later(cid, msg.message_id))
+            return
 
         if vic["debuff_payoff"] > 0 and vic["money"] > 0 and random.randint(1, 100) <= vic["debuff_payoff"]:
             amt = vic["money"] // 2
             await async_upd(vid, cid, {"money": vic["money"] - amt})
             await async_upd(aid, cid, {"money": att["money"] + amt})
-            return await bot.send_message(cid, f"💸 Откуп! {vic['username']} отдал {amt}💰")
+            msg = await bot.send_message(cid, f"💸 Откуп! {vic['username']} отдал {amt}💰")
+            asyncio.create_task(_delete_later(cid, msg.message_id))
+            return
 
+        # ── Джиу-джитсу (с проверкой косости жертвы) ──
         if vic["stat_jiu"] > 0 and random.randint(1, 100) <= vic["stat_jiu"]:
-            await bot.send_message(cid, f"🥋 {vic['username']} использовал джиу-джитсу! Контратака!")
-            await do_punch(vid, vic["username"], aid, cid, auto=True)
+            jiu_cross = vic.get("debuff_cross", 0)
+            if jiu_cross > 0 and random.randint(1, 100) <= jiu_cross:
+                msg = await bot.send_message(
+                    cid, f"🥋 {vic['username']} попытался джиу-джитсу но промахнулся! (косость {jiu_cross}%)"
+                )
+                asyncio.create_task(_delete_later(cid, msg.message_id))
+            else:
+                msg = await bot.send_message(
+                    cid, f"🥋 {vic['username']} использовал джиу-джитсу! Контратака!"
+                )
+                asyncio.create_task(_delete_later(cid, msg.message_id))
+                await do_punch(vid, vic["username"], aid, cid, auto=True)
             if not auto:
                 await async_upd(aid, cid, {"last_punch": now})
             return
 
+        # ── Блок ──
         if vic["stat_block"] > 0 and random.randint(1, 100) <= vic["stat_block"]:
-            return await bot.send_message(cid, f"🛡️ {vic['username']} заблокировал удар!")
+            msg = await bot.send_message(cid, f"🛡️ {vic['username']} заблокировал удар!")
+            asyncio.create_task(_delete_later(cid, msg.message_id))
+            return
 
         base_dmg = 2 if att["glove_durability"] > 0 else 1
         weak_proc = vic["debuff_weak"] > 0 and random.randint(1, 100) <= vic["debuff_weak"]
         dmg = base_dmg * 2 if weak_proc else base_dmg
         nhp = max(0, vic["hp"] - dmg)
+
+        # ── Дом ──
+        if vic.get("house_hp", 0) > 0:
+            new_house = vic["house_hp"] - 1
+            await async_upd(vid, cid, {"house_hp": new_house})
+            house_note = f"\n🏠 Дом разрушен!" if new_house == 0 else f"\n🏠 Дом поглотил удар! Прочность: {new_house}/30"
+            glove_msg = ""
+            if att["glove_durability"] > 0:
+                new_dur = att["glove_durability"] - 1
+                await async_upd(aid, cid, {"glove_durability": new_dur})
+                glove_msg = "\n🥊 Перчатка сломалась!" if new_dur == 0 else f"\n🥊 Перчатка: {new_dur}/10"
+            txt = random.choice(PUNCH_TEXTS).format(attacker=att["username"], victim=vic["username"])
+            full_msg = f"💥 {txt}{house_note}{glove_msg}"
+            if not auto:
+                await async_upd(aid, cid, {"last_punch": now})
+            sent = await bot.send_message(cid, full_msg)
+            asyncio.create_task(_delete_later(cid, sent.message_id))
+            return
 
         glove_msg = ""
         if att["glove_durability"] > 0:
@@ -971,11 +1025,8 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
             glove_msg = "\n🥊 Перчатка сломалась!" if new_dur == 0 else f"\n🥊 Перчатка: {new_dur}/10"
 
         take = vic["money"] // 4
-        new_vic_money = max(0, vic["money"] - take)
-        new_att_money = att["money"] + take
-
-        await async_upd(vid, cid, {"hp": nhp, "money": new_vic_money})
-        await async_upd(aid, cid, {"money": new_att_money})
+        await async_upd(vid, cid, {"hp": nhp, "money": max(0, vic["money"] - take)})
+        await async_upd(aid, cid, {"money": att["money"] + take})
 
         black_msg = ""
         if vic["black_money"] > 0 and random.randint(1, 100) <= 10:
@@ -984,64 +1035,122 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
             black_msg = "\n🖤 Украдена 1 чёрная монета!"
 
         txt = random.choice(PUNCH_TEXTS).format(attacker=att["username"], victim=vic["username"])
-        msg = f"💥 {txt}\n💰 +{take} | ❤️ {vic['username']}: {nhp}/{vic['max_hp']}"
+        msg_text = f"💥 {txt}\n💰 +{take} | ❤️ {vic['username']}: {nhp}/{vic['max_hp']}"
 
         if weak_proc and base_dmg == 2:
-            msg += "\n⚡ Перчатка + Слабость: 4 урона!"
+            msg_text += "\n⚡ Перчатка + Слабость: 4 урона!"
         elif weak_proc:
-            msg += "\n⚡ Слабость удвоила урон!"
+            msg_text += "\n⚡ Слабость удвоила урон!"
 
-        msg += glove_msg + black_msg
+        msg_text += glove_msg + black_msg
 
         if nhp == 0 and vic["glove_durability"] > 0:
             if att["glove_durability"] == 0:
                 await async_upd(aid, cid, {"glove_durability": vic["glove_durability"]})
                 await async_upd(vid, cid, {"glove_durability": 0})
-                msg += f"\n🥊 Перчатка ({vic['glove_durability']}/10) перешла к {att['username']}!"
+                msg_text += f"\n🥊 Перчатка ({vic['glove_durability']}/10) перешла к {att['username']}!"
             else:
                 await async_upd(vid, cid, {"glove_durability": 0})
-                msg += f"\n🥊 Перчатка {vic['username']} уничтожена!"
+                msg_text += f"\n🥊 Перчатка {vic['username']} уничтожена!"
 
         if nhp == 0 and vic["handcuffs"] > 0:
             await async_upd(aid, cid, {"handcuffs": att["handcuffs"] + vic["handcuffs"]})
             await async_upd(vid, cid, {"handcuffs": 0})
-            msg += f"\n⛓️ Наручники ({vic['handcuffs']} шт.) перешли к {att['username']}!"
+            msg_text += f"\n⛓️ Наручники ({vic['handcuffs']} шт.) перешли к {att['username']}!"
 
+        # ── Отпор (с проверкой косости) ──
         if vic["stat_counter"] > 0 and random.randint(1, 100) <= vic["stat_counter"]:
-            msg += f"\n🔄 {vic['username']} активировал Отпор!"
-            await do_punch(vid, vic["username"], aid, cid, auto=True)
+            counter_cross = vic.get("debuff_cross", 0)
+            if counter_cross > 0 and random.randint(1, 100) <= counter_cross:
+                msg_text += f"\n🔄 {vic['username']} попытался отпор но промахнулся! (косость {counter_cross}%)"
+            else:
+                msg_text += f"\n🔄 {vic['username']} активировал Отпор!"
+                await do_punch(vid, vic["username"], aid, cid, auto=True)
 
+        # ── Случайное изменение статов жертвы ──
+        stat_msg = ""
         if random.random() < 0.25:
-            valid = [s for s in ALL_STATS if vic[s] < 100]
-            if valid:
-                st = random.choice(valid)
-                nv = max(0, vic[st] - 1 if st in POSITIVE_STATS else vic[st] + 1)
-                await async_upd(vid, cid, {st: nv})
-                sign = "📉" if st in POSITIVE_STATS else "📈"
-                msg += f"\n{sign} {STAT_NAMES[st]}: {vic[st]}% → {nv}%"
-                if st == "stat_regen":
-                    msg += f" (реген: {format_time(calc_regen_time(nv))}/HP)"
+            vic_fresh = await db_task(_get_user, vid, cid, vic.get("username", ""))
+            roll = random.random()
 
+            if roll < 0.35:
+                # Снижаем успех (может уйти в минус до -100)
+                sval = vic_fresh.get("stat_success", 0)
+                if sval > -100:
+                    nv = sval - 1
+                    await async_upd(vid, cid, {"stat_success": nv})
+                    stat_msg = f"\n📉 Успех {vic['username']}: {sval}% → {nv}%"
+                    if nv < 0:
+                        stat_msg += f" (КД работы: {format_time(calc_job_cooldown(nv))})"
+
+            elif roll < 0.55:
+                # Снижаем гигачада (может уйти в минус до -100)
+                gval = vic_fresh.get("stat_gigachad", 0)
+                if gval > -100:
+                    nv = gval - 1
+                    await async_upd(vid, cid, {"stat_gigachad": nv})
+                    stat_msg = f"\n📉 Гигачад {vic['username']}: {gval}% → {nv}%"
+                    if nv < 0:
+                        stat_msg += f" (КД спорта: {format_time(calc_sport_cooldown(nv))})"
+
+            elif roll < 0.70:
+                # Снижаем реген (может уйти в минус до -100)
+                rval = vic_fresh.get("stat_regen", 0)
+                if rval > -100:
+                    nv = rval - 1
+                    await async_upd(vid, cid, {"stat_regen": nv})
+                    stat_msg = f"\n📉 Регенерация {vic['username']}: {rval}% → {nv}%"
+                    stat_msg += f" (реген: {format_time(calc_regen_time(nv))}/HP)"
+
+            else:
+                # Случайный дебафф или снижение других позитивных статов
+                pool = []
+                for s in ["debuff_weak", "debuff_fear", "debuff_payoff", "debuff_cross"]:
+                    if vic_fresh.get(s, 0) < 100:
+                        pool.append((s, False))
+                for s in ["stat_counter", "stat_block", "stat_jiu"]:
+                    if vic_fresh.get(s, 0) > 0:
+                        pool.append((s, True))
+                if pool:
+                    chosen, is_pos = random.choice(pool)
+                    old_v = vic_fresh.get(chosen, 0)
+                    new_v = old_v - 1 if is_pos else old_v + 1
+                    await async_upd(vid, cid, {chosen: new_v})
+                    sign = "📉" if is_pos else "📈"
+                    stat_msg = f"\n{sign} {STAT_NAMES[chosen]}: {old_v}% → {new_v}%"
+
+        msg_text += stat_msg
+
+        # ── Страх ──
         conn = _db()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT username, debuff_fear FROM users WHERE chat_id=? AND debuff_fear>0", (cid,))
+            cur.execute(
+                "SELECT username, debuff_fear FROM users WHERE chat_id=? AND debuff_fear>0",
+                (cid,)
+            )
             fear_rows = cur.fetchall()
         finally:
             conn.close()
 
         for fr in fear_rows:
             if random.randint(1, 100) <= fr["debuff_fear"]:
-                await bot.send_message(cid, random.choice(POOP_TEXTS).format(nick=fr["username"]))
+                # Сообщение об обосрался — НЕ удаляем
+                await bot.send_message(
+                    cid,
+                    random.choice(POOP_TEXTS).format(nick=fr["username"])
+                )
 
         if not auto:
             await async_upd(aid, cid, {"last_punch": now})
 
-        await bot.send_message(cid, msg)
+        sent = await bot.send_message(cid, msg_text)
+        asyncio.create_task(_delete_later(cid, sent.message_id))
 
     except Exception as e:
         logger.error(f"Punch error: {e}", exc_info=True)
-        await bot.send_message(cid, "⚠️ Ошибка при ударе.")
+        sent = await bot.send_message(cid, "⚠️ Ошибка при ударе.")
+        asyncio.create_task(_delete_later(cid, sent.message_id))
 
 # ─── Магазин ──────────────────────────────────────────────────────────────────
 
@@ -1231,8 +1340,12 @@ async def cmd_help(m: types.Message):
             "🏠 Дом (100💰+) — 30 уд. защиты, цена растёт на 100💰\n\n"
             "⚡ Если похитителя самого похитят — его заложники и рабы перейдут новому хозяину!\n"
             "⭐ Успех — снижает КД работы (до 10м при 100%)\n"
-            "📉 Кризис — увеличивает КД работы (до 3ч при 100%)\n"
-            "   (кризис начисляется только при Успехе = 0%)",
+            "   При минусе — увеличивает КД (до 3ч при -100%)\n"
+            "💪 Гигачад — снижает КД спорта (до 30м при 100%)\n"
+            "   При минусе — увеличивает КД спорта (до 3ч при -100%)\n"
+            "🔄 Регенерация — может уйти в минус (реген замедляется до 2ч/HP)\n"
+            "🎯 Косость — шанс промаха при ударе, отпоре и джиу-джитсу\n"
+            "   (всё это может измениться рандомно при ударах)",
             reply_markup=kb.as_markup()
         )
     except Exception as e:
@@ -1399,45 +1512,42 @@ async def cmd_sport(m: types.Message):
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await m.answer(reason)
+            return await reply_and_delete(m, reason)
 
         tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
         if tranqed:
-            return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
+            return await reply_and_delete(m, f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
         u = await db_task(_get_user, uid, cid, name)
         if u["hp"] <= 0:
-            return await m.answer("💀 0 HP! Тренировки запрещены")
+            return await reply_and_delete(m, "💀 0 HP! Тренировки запрещены")
 
         now = time.time()
-        cd = COOLDOWNS["sport"] - (now - (u["last_sport"] or 0))
+        sport_cd = calc_sport_cooldown(u.get("stat_gigachad", 0))
+        cd = sport_cd - (now - (u["last_sport"] or 0))
         if cd > 0:
-            return await m.answer(f"⏳ Тренировка доступна через {format_time(cd)}")
+            return await reply_and_delete(m, f"⏳ Тренировка доступна через {format_time(cd)}")
 
         st = random.choice(POSITIVE_STATS)
-        old_val = u[st]
+        old_val = u.get(st, 0)
         nv = min(100, old_val + 1)
         await async_upd(uid, cid, {st: nv, "last_sport": now})
 
-        crisis_msg = ""
-        if st == "stat_success" and u.get("debuff_crisis", 0) > 0:
-            # Рост успеха немного снижает кризис
-            new_crisis = max(0, u["debuff_crisis"] - 1)
-            await async_upd(uid, cid, {"debuff_crisis": new_crisis})
-            crisis_msg = f"\n📉 Кризис снизился: {u['debuff_crisis']}% → {new_crisis}%"
-
-        job_cd_new = calc_job_cooldown(nv if st == "stat_success" else u.get("stat_success", 0),
-                                       u.get("debuff_crisis", 0))
         msg = f"🏋️ {u['username']} прокачал {STAT_NAMES[st]}: {old_val}% → {nv}%"
+
         if st == "stat_regen":
             msg += f"\n⏱ Время регена: {format_time(calc_regen_time(nv))}/HP"
-        if st == "stat_success":
-            msg += f"\n⏱ КД работы теперь: {format_time(job_cd_new)}"
-        msg += crisis_msg
-        await m.answer(msg)
+        elif st == "stat_success":
+            new_job_cd = calc_job_cooldown(nv)
+            msg += f"\n⏱ КД работы теперь: {format_time(new_job_cd)}"
+        elif st == "stat_gigachad":
+            new_sport_cd = calc_sport_cooldown(nv)
+            msg += f"\n⏱ КД спорта теперь: {format_time(new_sport_cd)}"
+
+        await reply_and_delete(m, msg)
     except Exception as e:
         logger.error(f"/sport error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка тренировки")
+        await reply_and_delete(m, "⚠️ Ошибка тренировки")
 
 # ─── /shop ────────────────────────────────────────────────────────────────────
 
@@ -1741,31 +1851,31 @@ async def cmd_freed(m: types.Message):
 
             # Шаг 1: снять наручники в рабстве
             if rec["handcuffed"]:
-                if random.randint(1, 100) <= 30:
+                if random.randint(1, 100) <= 50:
                     await db_task(_set_handcuffed, rec["id"], 0)
-                    return await m.answer(
+                    return await reply_and_delete(m,
                         f"⛓️ {display} снял наручники в рабстве у {owner_name}!\n"
                         f"Теперь попробуй сбежать (/freed через 30м)"
                     )
                 else:
-                    return await m.answer(
+                    return await reply_and_delete(m,
                         f"⛓️ {display} не смог снять наручники в рабстве у {owner_name}!\n"
                         f"Попробуй через 30м."
                     )
 
             # Шаг 2: сбежать из рабства обратно в подвал к клиенту (slave_owner)
-            if random.randint(1, 100) <= 30:
+            if random.randint(1, 100) <= 50:
                 # Клиент становится новым похитителем в подвале
                 client_id = rec.get("slave_owner_id", 0)
                 client_name = rec.get("slave_owner_name", "?")
                 await db_task(_escape_from_slavery, rec["id"], client_id, client_name)
-                return await m.answer(
+                return await reply_and_delete(m,
                     f"🏃 {display} сбежал из рабства!\n"
                     f"Теперь {display} в подвале у {client_name}.\n"
                     f"Используй /freed ещё раз чтобы сбежать окончательно (кд 30м)."
                 )
             else:
-                return await m.answer(
+                return await reply_and_delete(m,
                     f"😢 {display} не смог сбежать из рабства {owner_name}!\n"
                     f"Следующая попытка через 30м."
                 )
@@ -1777,24 +1887,24 @@ async def cmd_freed(m: types.Message):
 
         # Шаг: снять наручники в подвале
         if rec["handcuffed"]:
-            if random.randint(1, 100) <= 30:
+            if random.randint(1, 100) <= 50:
                 await db_task(_set_handcuffed, rec["id"], 0)
-                return await m.answer(
+                return await reply_and_delete(m,
                     f"⛓️ {display} снял наручники в подвале {kidnapper_name}!\n"
                     f"Теперь попробуй сбежать (/freed через 30м)"
                 )
             else:
-                return await m.answer(
+                return await reply_and_delete(m,
                     f"⛓️ {display} не смог снять наручники в подвале {kidnapper_name}!\n"
                     f"Попробуй через 30м."
                 )
 
         # Финальный побег из подвала
-        if random.randint(1, 100) <= 30:
+        if random.randint(1, 100) <= 50:
             await db_task(_free_kidnapped, rec["id"])
-            await m.answer(f"🏃 {display} окончательно сбежал из подвала {kidnapper_name}! Свобода!")
+            await reply_and_delete(m, f"🏃 {display} окончательно сбежал из подвала {kidnapper_name}! Свобода!")
         else:
-            await m.answer(
+            await reply_and_delete(m,
                 f"😢 {display} не смог сбежать из подвала {kidnapper_name}!\n"
                 f"Следующая попытка через 30м."
             )
