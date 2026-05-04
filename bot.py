@@ -55,17 +55,25 @@ async def reply_and_delete(m: types.Message, text: str, delay: int = 300, **kwar
     asyncio.create_task(_delete_later(sent.chat.id, sent.message_id, delay))
     return sent
 
+async def send_permanent(chat_id: int, text: str, **kwargs) -> types.Message:
+    """Отправляет сообщение БЕЗ авто-удаления (для важных уведомлений)."""
+    return await bot.send_message(chat_id, text, **kwargs)
+
+async def edit_and_delete(msg: types.Message, text: str, delay: int = 300, **kwargs):
+    """Редактирует сообщение и планирует удаление."""
+    try:
+        await msg.edit_text(text, **kwargs)
+    except Exception:
+        pass
+    asyncio.create_task(_delete_later(msg.chat.id, msg.message_id, delay))
+
 class AutoDeleteMiddleware(BaseMiddleware):
     """
-    Удаляет через 5 минут:
-    - любые сообщения бота (исходящие)
-    - сообщения игроков начинающиеся с / (команды)
-    Исключение: POOP_TEXTS — не удаляются (обрабатываются отдельно в do_punch).
-    Также сохраняет tg_username пользователя в БД.
+    Удаляет через 5 минут команды игроков (начинающиеся с /).
+    Сохраняет tg_username пользователя в БД.
     """
     async def __call__(self, handler, event: TelegramObject, data: dict):
         result = await handler(event, data)
-        # Сохраняем tg_username и удаляем входящую команду игрока
         if isinstance(event, types.Message):
             if event.from_user and event.from_user.username:
                 uid = event.from_user.id
@@ -77,35 +85,30 @@ class AutoDeleteMiddleware(BaseMiddleware):
                 asyncio.create_task(_delete_later(event.chat.id, event.message_id))
         return result
 
+class AutoDeleteResponseMiddleware(BaseMiddleware):
+    """
+    Авто-удаление ответов бота через 5 минут.
+    Подменяет метод answer у каждого сообщения для планирования удаления.
+    """
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        if isinstance(event, types.Message):
+            _event = event
+            _original_answer = types.Message.answer
+
+            async def answer_with_delete(text, *args, _no_delete=False, **kwargs):
+                msg = await _original_answer(_event, text, *args, **kwargs)
+                if not _no_delete and msg:
+                    asyncio.create_task(
+                        _delete_later(_event.chat.id, msg.message_id, 300)
+                    )
+                return msg
+
+            event.answer = answer_with_delete
+
+        return await handler(event, data)
+
 dp.message.middleware(AutoDeleteMiddleware())
-
-# ── Патч bot.send_message для авто-удаления всех исходящих ──────────────────
-
-_original_send_message = Bot.send_message
-_original_answer = types.Message.answer
-
-async def _patched_send_message(self, chat_id, text, *args, _no_delete=False, **kwargs):
-    msg = await _original_send_message(self, chat_id, text, *args, **kwargs)
-    if not _no_delete:
-        asyncio.create_task(_delete_later(chat_id, msg.message_id))
-    return msg
-
-async def _patched_answer(self, text, *args, _no_delete=False, **kwargs):
-    msg = await _original_answer(self, text, *args, **kwargs)
-    if not _no_delete:
-        asyncio.create_task(_delete_later(self.chat.id, msg.message_id))
-    return msg
-
-Bot.send_message = _patched_send_message
-types.Message.answer = _patched_answer
-
-async def edit_and_delete(msg: types.Message, text: str, delay: int = 300, **kwargs):
-    """Редактирует сообщение и планирует удаление."""
-    try:
-        await msg.edit_text(text, **kwargs)
-    except Exception:
-        pass
-    asyncio.create_task(_delete_later(msg.chat.id, msg.message_id, delay))
+dp.message.middleware(AutoDeleteResponseMiddleware())
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -2184,10 +2187,9 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
         for fr in fear_rows:
             if random.randint(1, 100) <= fr["debuff_fear"]:
                 # Сообщение об обосрался — НЕ удаляем
-                await bot.send_message(
+                await send_permanent(
                     cid,
-                    random.choice(POOP_TEXTS).format(nick=fr["username"]),
-                    _no_delete=True
+                    random.choice(POOP_TEXTS).format(nick=fr["username"])
                 )
 
         if not auto:
@@ -3880,12 +3882,11 @@ async def income_loop():
                             f"{old_bm}🖤 → {new_bm}🖤 (+{periods})"
                         )
                         try:
-                            await bot.send_message(
+                            await send_permanent(
                                 cid,
                                 f"🖤 {client_name} получил {periods}🖤 "
                                 f"за раба {rec['victim_name']}!\n"
                                 f"Баланс: {new_bm}🖤",
-                                _no_delete=True
                             )
                         except Exception as e:
                             logger.error(f"Income send error: {e}")
