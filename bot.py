@@ -403,6 +403,39 @@ def clean_nick(t: str) -> str:
         t = t.replace(ch, "")
     return t or "User"
 
+async def resolve_target(m: types.Message, cid: int) -> tuple:
+    """
+    Возвращает (user_id, full_name) цели.
+    Приоритет: reply > @тег в тексте команды.
+    Возвращает (None, None) если цель не найдена.
+    """
+    # 1. Reply
+    if m.reply_to_message and m.reply_to_message.from_user.id != bot.id:
+        t = m.reply_to_message.from_user
+        return t.id, t.full_name
+
+    # 2. @тег в тексте
+    parts = m.text.split() if m.text else []
+    for part in parts[1:]:
+        if part.startswith("@"):
+            username = part[1:].lower()
+            # Ищем в БД чата по username
+            conn = _db()
+            try:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT user_id, username FROM users WHERE chat_id=? AND LOWER(username)=?",
+                    (cid, username)
+                )
+                row = c.fetchone()
+                if row:
+                    return row["user_id"], row["username"]
+            finally:
+                conn.close()
+            return None, f"@{part[1:]}"
+
+    return None, None
+
 # ─── БД ───────────────────────────────────────────────────────────────────────
 
 def _db():
@@ -863,40 +896,13 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
         job_str = "доступна!"
     salary_now = calc_job_salary(u.get("job_count", 0))
 
-    # ── Доход от рабов (как клиент) ──
+    # ── Доход от рабов (только как клиент) ──
     slave_income_str = ""
     if slave_list:
-        # Берём ближайшего раба у которого last_income минимальный (он первым принесёт доход)
         earliest = min(slave_list, key=lambda x: x["last_income"])
         elapsed_income = now - earliest["last_income"]
-        # Каждый раб приносит 0.5🖤 каждые 7200с (2ч)
-        # Период накопления целой монеты — 2 периода = 14400с
         next_tick = 7200 - (elapsed_income % 7200)
-        slave_income_str = (
-            f"\n   ⏳ Следующий доход за рабов: через {format_time(next_tick)} "
-            f"(период: {format_time(7200)})"
-        )
-
-    # ── Доход от рабства (как продавец) ──
-    seller_income_str = ""
-    conn_s = _db()
-    try:
-        cur_s = conn_s.cursor()
-        cur_s.execute(
-            "SELECT * FROM kidnapped WHERE kidnapper_id=? AND chat_id=? AND sold=1 ORDER BY last_income ASC LIMIT 1",
-            (uid, cid)
-        )
-        sold_row = cur_s.fetchone()
-    finally:
-        conn_s.close()
-    if sold_row:
-        sold_row = dict(sold_row)
-        elapsed_sold = now - sold_row["last_income"]
-        next_tick_sold = 7200 - (elapsed_sold % 7200)
-        seller_income_str = (
-            f"\n   ⏳ Следующий доход (продавец): через {format_time(next_tick_sold)} "
-            f"(период: {format_time(7200)})"
-        )
+        slave_income_str = f"⏳ Следующий доход за рабов: через {format_time(next_tick)} (каждые {format_time(7200)})"
 
     lines = [
         f"👤 Игрок: {display_name}",
@@ -907,11 +913,8 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
         f"💰  Монеты: {u['money']}",
         f"🖤  Чёрные монеты: {u['black_money']}",
     ]
-
     if slave_income_str:
-        lines.append(f"   (как клиент){slave_income_str}")
-    if seller_income_str:
-        lines.append(f"   (как продавец){seller_income_str}")
+        lines.append(f"   {slave_income_str}")
 
     lines += [
         "",
@@ -1472,23 +1475,22 @@ async def cmd_punch(m: types.Message):
         if tranqed:
             return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
-        if not m.reply_to_message:
-            return await m.answer("⚠️ Ответьте на сообщение игрока!")
-
         u = await db_task(_get_user, uid, cid, name)
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Ждите реген или купите жизнь в /shop")
 
-        target = m.reply_to_message.from_user
-        if target.id == bot.id:
+        tid, tfull = await resolve_target(m, cid)
+        if not tid:
+            return await m.answer("⚠️ Ответьте на сообщение игрока или укажите @тег!")
+        if tid == bot.id:
             return await m.answer("🤖 Ботов не бьём!")
-        if target.id == uid:
+        if tid == uid:
             return await m.answer("🤡 Себя бить нельзя!")
 
-        tname = clean_nick(target.full_name)
-        await db_task(_get_user, target.id, cid, tname)
-        await db_task(_upd_username, target.id, cid, tname)
-        await do_punch(uid, u["username"], target.id, cid)
+        tname = clean_nick(tfull)
+        await db_task(_get_user, tid, cid, tname)
+        await db_task(_upd_username, tid, cid, tname)
+        await do_punch(uid, u["username"], tid, cid)
     except Exception as e:
         logger.error(f"/punch error: {e}", exc_info=True)
         await m.answer("⚠️ Ошибка удара")
@@ -1753,13 +1755,12 @@ async def cmd_hill(m: types.Message):
         if tranqed:
             return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
-        if not m.reply_to_message:
-            return await m.answer("⚠️ Ответьте на сообщение игрока которому хотите помочь!")
-
-        target = m.reply_to_message.from_user
-        if target.id == uid:
+        tid, tfull = await resolve_target(m, cid)
+        if not tid:
+            return await m.answer("⚠️ Ответьте на сообщение игрока или укажите @тег!")
+        if tid == uid:
             return await m.answer("🤡 Нельзя делиться HP с собой!")
-        if target.id == bot.id:
+        if tid == bot.id:
             return await m.answer("🤖 Боту HP не нужно!")
 
         await db_task(_recalc_hp, uid, cid)
@@ -1768,28 +1769,25 @@ async def cmd_hill(m: types.Message):
 
         if u["hp"] <= 1:
             return await m.answer(
-                f"❤️ {sender_name}, у вас {u['hp']} HP — нельзя делиться!\n"
-                f"Нужно больше 1 HP."
+                f"❤️ {sender_name}, у вас {u['hp']} HP — нельзя делиться!\nНужно больше 1 HP."
             )
 
-        tname = clean_nick(target.full_name)
-        await db_task(_get_user, target.id, cid, tname)
-        await db_task(_upd_username, target.id, cid, tname)
-        await db_task(_recalc_hp, target.id, cid)
-        t = await db_task(_get_user, target.id, cid, tname)
+        tname = clean_nick(tfull)
+        await db_task(_get_user, tid, cid, tname)
+        await db_task(_upd_username, tid, cid, tname)
+        await db_task(_recalc_hp, tid, cid)
+        t = await db_task(_get_user, tid, cid, tname)
         target_name = t.get("username") or tname
 
         if t["hp"] >= t["max_hp"]:
             return await m.answer(
-                f"❤️ У {target_name} уже максимум HP ({t['hp']}/{t['max_hp']})!\n"
-                f"Нет смысла делиться."
+                f"❤️ У {target_name} уже максимум HP ({t['hp']}/{t['max_hp']})!"
             )
 
         new_sender_hp = u["hp"] - 1
         new_target_hp = min(t["max_hp"], t["hp"] + 1)
-
         await async_upd(uid, cid, {"hp": new_sender_hp})
-        await async_upd(target.id, cid, {"hp": new_target_hp})
+        await async_upd(tid, cid, {"hp": new_target_hp})
 
         await m.answer(
             f"❤️ {sender_name} поделился 1 HP с {target_name}!\n"
@@ -1820,53 +1818,49 @@ async def cmd_kidnap(m: types.Message):
         if tranqed:
             return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
-        if not m.reply_to_message:
-            return await m.answer("⚠️ Ответьте на сообщение игрока!")
-
-        target = m.reply_to_message.from_user
-        if target.id == uid:
-            return await m.answer("🤡 Нельзя похитить себя!")
-        if target.id == bot.id:
-            return await m.answer("🤖 Бота не похищают!")
-
         u = await db_task(_get_user, uid, cid, name)
         if u["hp"] <= 0:
             return await m.answer("💀 0 HP! Вы не можете похищать.")
 
-        tname = clean_nick(target.full_name)
-        await db_task(_get_user, target.id, cid, tname)
-        await db_task(_upd_username, target.id, cid, tname)
-        await db_task(_recalc_hp, target.id, cid)
-        t = await db_task(_get_user, target.id, cid, tname)
+        tid, tfull = await resolve_target(m, cid)
+        if not tid:
+            return await m.answer("⚠️ Ответьте на сообщение игрока или укажите @тег!")
+        if tid == uid:
+            return await m.answer("🤡 Нельзя похитить себя!")
+        if tid == bot.id:
+            return await m.answer("🤖 Бота не похищают!")
+
+        tname = clean_nick(tfull)
+        await db_task(_get_user, tid, cid, tname)
+        await db_task(_upd_username, tid, cid, tname)
+        await db_task(_recalc_hp, tid, cid)
+        t = await db_task(_get_user, tid, cid, tname)
         target_name = t.get("username") or tname
 
         if t["hp"] > 0:
-            return await m.answer(f"❌ У {target_name} ещё есть HP ({t['hp']})! Похищать можно только при 0 HP.")
+            return await m.answer(
+                f"❌ У {target_name} ещё есть HP ({t['hp']})! Похищать можно только при 0 HP."
+            )
 
-        existing = await db_task(_get_kidnapped_by_victim, target.id, cid)
+        existing = await db_task(_get_kidnapped_by_victim, tid, cid)
         if existing:
             return await m.answer(f"🔒 {target_name} уже в чьём-то подвале или рабстве!")
 
         kid_name = u.get("username") or name
-        await db_task(_add_kidnapped, target.id, target_name, uid, kid_name, cid)
+        await db_task(_add_kidnapped, tid, target_name, uid, kid_name, cid)
 
         hostages = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
         num = len(hostages)
 
-        # Переносим заложников похищенного к новому похитителю
-        await db_task(_transfer_hostages, target.id, uid, kid_name, cid)
-
-        # Проверяем были ли переданы заложники
-        transferred_hostages = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
-        extra_count = len(transferred_hostages) - num
-        transfer_msg = ""
-        if extra_count > 0:
-            transfer_msg = f"\n⚡ {extra_count} заложник(ов) {target_name} перешли к {kid_name}!"
+        await db_task(_transfer_hostages, tid, uid, kid_name, cid)
+        transferred = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
+        extra = len(transferred) - num
+        transfer_msg = f"\n⚡ {extra} заложник(ов) {target_name} перешли к {kid_name}!" if extra > 0 else ""
 
         await m.answer(
             f"🔒 {kid_name} похитил {target_name} и запер в подвале!\n"
             f"Заложник #{num}.\n"
-            f"Жертва может сбежать: /freed (30% шанс, кд 30м)\n"
+            f"Жертва может сбежать: /freed (кд 30м)\n"
             f"Через 30м можно продать: /sell {num} (ответом на покупателя)"
             + transfer_msg
         )
@@ -2082,7 +2076,6 @@ async def cmd_handcuff(m: types.Message):
         if u["handcuffs"] <= 0:
             return await m.answer("⛓️ Нет наручников! Купи в /shop за 1🖤")
 
-        # Ищем и в подвальных и в рабах
         hostages = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
         slaves = await db_task(_get_slaves_by_owner, uid, cid)
         all_captives = hostages + slaves
@@ -2091,10 +2084,11 @@ async def cmd_handcuff(m: types.Message):
             return await m.answer("🔒 Нет заложников или рабов!")
 
         target_rec = None
-        parts = m.text.split()
+        parts = m.text.split() if m.text else []
 
-        if m.reply_to_message and m.reply_to_message.from_user.id != bot.id:
-            tid = m.reply_to_message.from_user.id
+        # Попытка через reply или @тег
+        tid, tfull = await resolve_target(m, cid)
+        if tid:
             for h in all_captives:
                 if h["victim_id"] == tid:
                     target_rec = h
@@ -2104,18 +2098,18 @@ async def cmd_handcuff(m: types.Message):
         elif len(parts) >= 2:
             try:
                 num = int(parts[1])
+                if num < 1 or num > len(all_captives):
+                    return await m.answer(f"❌ Заключённый #{num} не найден")
+                target_rec = all_captives[num - 1]
             except ValueError:
-                return await m.answer("❌ Укажите номер или ответьте на сообщение")
-            if num < 1 or num > len(all_captives):
-                return await m.answer(f"❌ Заключённый #{num} не найден")
-            target_rec = all_captives[num - 1]
+                return await m.answer("❌ Укажите номер или @тег или ответьте на сообщение")
         else:
             lines = ["⛓️ Ваши заключённые:\n"]
             for i, h in enumerate(all_captives, 1):
                 cuffs = " ⛓️" if h["handcuffed"] else ""
                 status = "🔒 подвал" if h["sold"] == 0 else "😈 раб"
                 lines.append(f"{i}. {h['victim_name']} [{status}]{cuffs}")
-            lines.append("\nИспользование: /handcuff <номер> или ответом")
+            lines.append("\nИспользование: /handcuff <номер> или @тег или ответом")
             return await m.answer("\n".join(lines))
 
         if target_rec["handcuffed"]:
@@ -2159,19 +2153,18 @@ async def cmd_trank(m: types.Message):
         if u.get("tranq_stock", 0) <= 0:
             return await m.answer("💉 Нет транквилизатора! Купи в /shop за 4🖤")
 
-        if not m.reply_to_message:
-            return await m.answer("⚠️ Ответьте на сообщение жертвы!")
-
-        target = m.reply_to_message.from_user
-        if target.id == uid:
+        tid, tfull = await resolve_target(m, cid)
+        if not tid:
+            return await m.answer("⚠️ Ответьте на сообщение жертвы или укажите @тег!")
+        if tid == uid:
             return await m.answer("🤡 Нельзя транквилизировать себя!")
-        if target.id == bot.id:
+        if tid == bot.id:
             return await m.answer("🤖 Бота не транквилизируют!")
 
-        tname = clean_nick(target.full_name)
-        await db_task(_get_user, target.id, cid, tname)
-        await db_task(_upd_username, target.id, cid, tname)
-        t = await db_task(_get_user, target.id, cid, tname)
+        tname = clean_nick(tfull)
+        await db_task(_get_user, tid, cid, tname)
+        await db_task(_upd_username, tid, cid, tname)
+        t = await db_task(_get_user, tid, cid, tname)
         target_name = t.get("username") or tname
 
         now = time.time()
@@ -2179,7 +2172,7 @@ async def cmd_trank(m: types.Message):
             return await m.answer(f"💉 {target_name} уже под транквилизатором!")
 
         tranq_end = now + 10800
-        await async_upd(target.id, cid, {"tranq_until": tranq_end, "last_hp_update": now})
+        await async_upd(tid, cid, {"tranq_until": tranq_end, "last_hp_update": now})
         await async_upd(uid, cid, {"tranq_stock": u["tranq_stock"] - 1})
 
         await m.answer(
@@ -2567,51 +2560,27 @@ async def income_loop():
                 if now - rec["last_income"] >= 7200:
                     periods = int((now - rec["last_income"]) // 7200)
                     cid = rec["chat_id"]
-
-                    # ── Клиент получает 0.5🖤 за период ──
-                    # Накапливаем через дробные периоды: каждые 2 периода = 1🖤
                     client_id = rec.get("slave_owner_id", 0)
                     client_name = rec.get("slave_owner_name", "")
-                    seller_id = rec.get("kidnapper_id", 0)
-                    seller_name = rec.get("kidnapper_name", "")
 
-                    # Считаем целые монеты: за N периодов каждый получает floor(N/2)
-                    # и +1 если N нечётное и это "чётный" тик (решаем через total_periods)
-                    # Простое решение: floor(periods/2) монет каждому, остаток копится
-                    client_black = periods // 2
-                    seller_black = periods // 2
-                    # Если periods нечётное — добавляем 1 монету случайному
-                    if periods % 2 == 1:
-                        if random.randint(0, 1) == 0:
-                            client_black += 1
-                        else:
-                            seller_black += 1
-
-                    if client_id and client_black > 0:
+                    if client_id:
                         kd = _get_user(client_id, cid, client_name)
-                        _upd_user(client_id, cid, {"black_money": kd["black_money"] + client_black})
+                        _upd_user(client_id, cid, {
+                            "black_money": kd["black_money"] + periods
+                        })
                         try:
                             await bot.send_message(
                                 cid,
-                                f"🖤 {client_name} получил {client_black}🖤 "
-                                f"за раба {rec['victim_name']}! (клиент)"
+                                f"🖤 {client_name} получил {periods}🖤 "
+                                f"за раба {rec['victim_name']}!"
                             )
                         except Exception:
                             pass
 
-                    if seller_id and seller_black > 0:
-                        sd = _get_user(seller_id, cid, seller_name)
-                        _upd_user(seller_id, cid, {"black_money": sd["black_money"] + seller_black})
-                        try:
-                            await bot.send_message(
-                                cid,
-                                f"🖤 {seller_name} получил {seller_black}🖤 "
-                                f"за раба {rec['victim_name']}! (продавец)"
-                            )
-                        except Exception:
-                            pass
-
-                    _upd_kidnapped_income(rec["id"], rec["last_income"] + periods * 7200)
+                    _upd_kidnapped_income(
+                        rec["id"],
+                        rec["last_income"] + periods * 7200
+                    )
 
         except Exception as e:
             logger.error(f"Income loop error: {e}", exc_info=True)
