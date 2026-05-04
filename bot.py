@@ -42,11 +42,18 @@ class AutoDeleteMiddleware(BaseMiddleware):
     - любые сообщения бота (исходящие)
     - сообщения игроков начинающиеся с / (команды)
     Исключение: POOP_TEXTS — не удаляются (обрабатываются отдельно в do_punch).
+    Также сохраняет tg_username пользователя в БД.
     """
     async def __call__(self, handler, event: TelegramObject, data: dict):
         result = await handler(event, data)
-        # Удаляем входящую команду игрока
+        # Сохраняем tg_username и удаляем входящую команду игрока
         if isinstance(event, types.Message):
+            if event.from_user and event.from_user.username:
+                uid = event.from_user.id
+                cid = event.chat.id
+                asyncio.create_task(
+                    db_task(_upd_tg_username, uid, cid, event.from_user.username)
+                )
             if event.text and event.text.startswith("/"):
                 asyncio.create_task(_delete_later(event.chat.id, event.message_id))
         return result
@@ -410,6 +417,9 @@ async def resolve_target(m: types.Message, cid: int) -> tuple:
     # 1. Reply
     if m.reply_to_message and m.reply_to_message.from_user.id != bot.id:
         t = m.reply_to_message.from_user
+        # Сохраняем tg_username если есть
+        if t.username:
+            await db_task(_upd_tg_username, t.id, cid, t.username)
         return t.id, t.full_name
 
     # 2. @тег в тексте
@@ -417,12 +427,12 @@ async def resolve_target(m: types.Message, cid: int) -> tuple:
     for part in parts[1:]:
         if part.startswith("@"):
             username = part[1:].lower()
-            # Ищем в БД чата по username
             conn = _db()
             try:
                 c = conn.cursor()
+                # Ищем по tg_username
                 c.execute(
-                    "SELECT user_id, username FROM users WHERE chat_id=? AND LOWER(username)=?",
+                    "SELECT user_id, username FROM users WHERE chat_id=? AND LOWER(tg_username)=?",
                     (cid, username)
                 )
                 row = c.fetchone()
@@ -534,6 +544,7 @@ def init_db():
             "job_count": "INTEGER DEFAULT 0",
             "house_hp": "INTEGER DEFAULT 0",
             "house_bought": "INTEGER DEFAULT 0",
+            "tg_username": "TEXT DEFAULT ''",   # Telegram @логин (без @)
         }
         for col, typedef in migrations_users.items():
             if col not in existing:
@@ -600,6 +611,11 @@ def _upd_user(uid: int, cid: int, fields: dict):
         conn.commit()
     finally:
         conn.close()
+
+def _upd_tg_username(uid: int, cid: int, tg_username: str):
+    """Сохраняет Telegram @логин (без @) в БД."""
+    if tg_username:
+        _upd_user(uid, cid, {"tg_username": tg_username.lower()})
 
 def _upd_username(uid: int, cid: int, name: str):
     safe = clean_nick(name)
@@ -2551,30 +2567,30 @@ async def income_loop():
                 conn.close()
 
             for rec in rows:
-                if now - rec["last_income"] >= 7200:
-                    periods = int((now - rec["last_income"]) // 7200)
+                elapsed = now - rec["last_income"]
+                if elapsed >= 7200:
+                    periods = int(elapsed // 7200)
                     cid = rec["chat_id"]
                     client_id = rec.get("slave_owner_id", 0)
-                    client_name = rec.get("slave_owner_name", "")
+                    client_name = rec.get("slave_owner_name", "") or "?"
 
-                    if client_id:
-                        kd = _get_user(client_id, cid, client_name)
-                        _upd_user(client_id, cid, {
-                            "black_money": kd["black_money"] + periods
-                        })
+                    if client_id and client_id != 0:
+                        kd = await db_task(_get_user, client_id, cid, client_name)
+                        new_bm = kd["black_money"] + periods
+                        await async_upd(client_id, cid, {"black_money": new_bm})
+                        logger.info(f"Income: {client_name} получил {periods}🖤 за раба {rec['victim_name']}")
                         try:
                             await bot.send_message(
                                 cid,
                                 f"🖤 {client_name} получил {periods}🖤 "
-                                f"за раба {rec['victim_name']}!"
+                                f"за раба {rec['victim_name']}!",
+                                _no_delete=True
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.error(f"Income send_message error: {e}")
 
-                    _upd_kidnapped_income(
-                        rec["id"],
-                        rec["last_income"] + periods * 7200
-                    )
+                    new_last_income = rec["last_income"] + periods * 7200
+                    await db_task(_upd_kidnapped_income, rec["id"], new_last_income)
 
         except Exception as e:
             logger.error(f"Income loop error: {e}", exc_info=True)
