@@ -1175,15 +1175,11 @@ def generate_job_task(job_count: int) -> dict:
 # ─── ТАЙМЕР ЗАДАНИЙ /JOB ──────────────────────────────────────────────────────
 
 async def job_task_timer(uid: int, cid: int, msg_id: int, deadline: float):
-    """
-    Ждёт до дедлайна и если задание не выполнено — отмечает провал.
-    При серии заданий — завершает серию с начислением за решённые.
-    """
     wait = max(0, deadline - time.time())
     await asyncio.sleep(wait + 1)
 
     if uid not in job_sessions:
-        return  # Уже выполнено или сдался
+        return
 
     session = job_sessions.pop(uid, None)
     if not session:
@@ -1192,18 +1188,16 @@ async def job_task_timer(uid: int, cid: int, msg_id: int, deadline: float):
     try:
         u = await db_task(_get_user, uid, cid, "")
         uname = u.get("username", "Игрок")
-
         solved = session.get("solved", 0)
         job_count = session.get("job_count", 0)
-        series = session.get("series", 1)
+        total_earned = session.get("total_earned", 0)
 
-        # Начисляем за уже решённые задания в серии
         salary_mult = calc_job_salary(job_count)
-        total_money = max(0, int(solved * 5 * salary_mult))
-        new_money = u["money"] + total_money
-        new_count = job_count + solved
+        total_money = max(0, int(total_earned * salary_mult))
 
-        if solved > 0:
+        if solved > 0 or total_earned > 0:
+            new_money = u["money"] + total_money
+            new_count = job_count + solved
             await async_upd(uid, cid, {
                 "money": new_money,
                 "last_job": time.time(),
@@ -1211,19 +1205,18 @@ async def job_task_timer(uid: int, cid: int, msg_id: int, deadline: float):
             })
 
         correct_ans = session.get("answer", "?")
+        try:
+            await bot.delete_message(cid, msg_id)
+        except Exception:
+            pass
         await send_auto(
             cid,
             f"⏰ {uname}, время вышло!\n"
             f"Правильный ответ: **{correct_ans}**\n\n"
             f"🏁 Серия прервана. Решено: {solved}/{JOB_SERIES_COUNT}\n"
-            f"💰 Начислено: {total_money}💰"
-            + ("\n⏳ КД работы запущен." if solved > 0 else ""),
+            f"💰 Начислено: {total_money}💰",
             parse_mode="Markdown",
         )
-        try:
-            await bot.delete_message(cid, msg_id)
-        except Exception:
-            pass
     except Exception as e:
         logger.error(f"Job timer error: {e}")
 
@@ -2484,6 +2477,7 @@ async def _start_job_task(
     job_count: int,
     series: int,
     solved: int,
+    total_earned: int = 0,
 ):
     """Генерирует и отправляет одно задание из серии."""
     task = generate_job_task(job_count)
@@ -2500,72 +2494,51 @@ async def _start_job_task(
         display = _hangman_display(word, guessed)
         art = _hangman_art(0)
         text = (
-            f"💼 Серия заданий [{series}/{JOB_SERIES_COUNT}] | Решено: {solved}\n"
-            f"Сложность: {diff}\n\n"
-            f"{task['question']}\n\n"
-            f"{art}\n`{display}`\n\n"
-            f"Награда за задание: {reward_money}💰\n"
-            f"⏰ Таймер: {format_time(task['timer'])}"
+            f"💼 Серия [{series}/{JOB_SERIES_COUNT}] | Решено: {solved} | {diff}\n\n"
+            f"{task['question']}\n\n{art}\n`{display}`\n\n"
+            f"Награда за задание: {reward_money}💰 | ⏰ {format_time(task['timer'])}"
         )
         sent = await reply_auto(m, text, reply_markup=kb, parse_mode="Markdown")
 
     elif task["type"] == "reverse_flag":
         builder = InlineKeyboardBuilder()
         for flag_em, country_name in task["options"]:
-            builder.button(
-                text=flag_em,
-                callback_data=f"job_flag:{uid}:{flag_em}"
-            )
+            builder.button(text=flag_em, callback_data=f"job_flag:{uid}:{flag_em}")
         builder.button(text="❌ Сдаться", callback_data=f"job_give_up:{uid}")
         builder.adjust(4)
         text = (
-            f"💼 Серия заданий [{series}/{JOB_SERIES_COUNT}] | Решено: {solved}\n"
-            f"Сложность: {diff}\n\n"
-            f"{task['question']}\n\n"
-            f"Выбери флаг 👇\n"
-            f"Награда за задание: {reward_money}💰\n"
-            f"⏰ {format_time(task['timer'])}"
+            f"💼 Серия [{series}/{JOB_SERIES_COUNT}] | Решено: {solved} | {diff}\n\n"
+            f"{task['question']}\n\nВыбери флаг 👇\n"
+            f"Награда за задание: {reward_money}💰 | ⏰ {format_time(task['timer'])}"
         )
         sent = await reply_auto(m, text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
     else:
         kb = _make_job_keyboard(uid)
         text = (
-            f"💼 Серия заданий [{series}/{JOB_SERIES_COUNT}] | Решено: {solved}\n"
-            f"Сложность: {diff}\n\n"
+            f"💼 Серия [{series}/{JOB_SERIES_COUNT}] | Решено: {solved} | {diff}\n\n"
             f"{task['question']}\n\n"
-            f"Награда за задание: {reward_money}💰\n"
-            f"⏰ Времени: {format_time(task['timer'])}\n\n"
+            f"Награда за задание: {reward_money}💰 | ⏰ {format_time(task['timer'])}\n\n"
             f"Напишите ответ в чат."
         )
         sent = await reply_auto(m, text, reply_markup=kb, parse_mode="Markdown")
 
     job_sessions[uid] = {
-        "chat_id": cid,
-        "series": series,
-        "solved": solved,
-        "current": task,
-        "type": task["type"],
+        "chat_id": cid, "series": series, "solved": solved,
+        "current": task, "type": task["type"],
         "answer": task["answer"],
         "answers": task.get("answers", [task["answer"]]),
-        "msg_id": sent.message_id,
-        "deadline": deadline,
-        "reward": reward_money,
-        "difficulty": diff,
-        "job_count": job_count,
+        "msg_id": sent.message_id, "deadline": deadline,
+        "reward": reward_money, "difficulty": diff, "job_count": job_count,
+        "total_earned": total_earned,
         "extra": {
             "hangman_word": task.get("hangman_word", ""),
-            "guessed": set(),
-            "errors": 0,
-            "max_errors": task.get("max_errors", 6),
+            "guessed": set(), "errors": 0, "max_errors": task.get("max_errors", 6),
             "correct_flag": task.get("correct_flag", ""),
             "options": task.get("options", []),
         },
     }
-
-    asyncio.create_task(
-        job_task_timer(uid, cid, sent.message_id, deadline)
-    )
+    asyncio.create_task(job_task_timer(uid, cid, sent.message_id, deadline))
 
 
 async def _finish_job_series(
@@ -2574,12 +2547,12 @@ async def _finish_job_series(
     cid: int,
     solved: int,
     job_count: int,
+    total_earned: int = 0,
     is_call: bool = False,
 ):
     """Завершает серию из 5 заданий, начисляет награду."""
     salary_mult = calc_job_salary(job_count)
-    avg_reward = 5
-    total_money = max(0, int(solved * avg_reward * salary_mult))
+    total_money = max(0, int(total_earned * salary_mult))
 
     u = await db_task(_get_user, uid, cid, "")
     new_money = u["money"] + total_money
@@ -2598,9 +2571,9 @@ async def _finish_job_series(
         f"💼 Всего работ: {new_count}"
     )
     if is_call:
-        await m_or_call.message.answer(text)
+        await send_auto(cid, text)
     else:
-        await m_or_call.answer(text)
+        await reply_auto(m_or_call, text)
 
 
 @dp.message(Command("sport"))
@@ -2711,30 +2684,26 @@ async def handle_job_answer(m: types.Message):
     correct = fuzzy_match_any(user_ans, session["answers"])
 
     if correct:
+        series = session["series"]
+        solved = session["solved"] + 1
+        job_count = session["job_count"]
+        reward = session["reward"]
+        total_earned = session.get("total_earned", 0) + reward
         job_sessions.pop(uid, None)
-        u = await db_task(_get_user, uid, cid, "")
-        new_count = session["job_count"] + 1
-        new_money = u["money"] + session["reward"]
-        new_black = u["black_money"] + session["reward_black"]
-        await async_upd(uid, cid, {
-            "money": new_money,
-            "black_money": new_black,
-            "last_job": time.time(),
-            "job_count": new_count,
-        })
+
         try:
             await m.bot.delete_message(cid, session["msg_id"])
         except Exception:
             pass
-        reward_str = f"+{session['reward']}💰"
-        if session["reward_black"]:
-            reward_str += f" +{session['reward_black']}🖤"
-        await reply_auto(m, 
-            f"✅ Правильно! {reward_str}\n"
-            f"💰 Баланс: {new_money} | Работ: {new_count}"
-        )
+
+        await reply_auto(m, f"✅ Правильно! [{series}/{JOB_SERIES_COUNT}] Решено: {solved} | Накоплено: {total_earned}💰")
+
+        if series < JOB_SERIES_COUNT:
+            await _start_job_task(m, uid, cid, job_count, series + 1, solved, total_earned)
+        else:
+            await _finish_job_series(m, uid, cid, solved, job_count, total_earned)
     else:
-        await reply_auto(m, f"❌ Неверно, попробуй ещё раз!")
+        await reply_auto(m, "❌ Неверно, попробуй ещё раз!")
 
 # ─── CALLBACK ДЛЯ ЗАДАНИЙ (флаги, виселица, сдаться) ─────────────────────────
 
@@ -2742,56 +2711,54 @@ async def handle_job_answer(m: types.Message):
 async def job_callback_handler(call: types.CallbackQuery):
     uid = call.from_user.id
     cid = call.message.chat.id
-    
+
     if uid not in job_sessions:
         return await call.answer("⏰ Задание уже завершено!", show_alert=True)
-    
+
     session = job_sessions[uid]
     if session["chat_id"] != cid:
         return await call.answer("❌ Не ваше задание!", show_alert=True)
-    
+
     data = call.data.split(":")
     action = data[0]
-    
-    # Сдаться
+
     if action == "job_give_up":
+        solved = session["solved"]
+        job_count = session["job_count"]
+        total_earned = session.get("total_earned", 0)
         job_sessions.pop(uid, None)
         try:
             await call.message.delete()
         except Exception:
             pass
-        await call.answer("🏳️ Вы сдались. Задание отменено.", show_alert=True)
+        await call.answer("🏳️ Вы сдались.", show_alert=True)
+        await _finish_job_series(call, uid, cid, solved, job_count, total_earned, is_call=True)
         return
-    
-    # Выбор флага для reverse_flag
+
     if action == "job_flag":
         selected_flag = data[2] if len(data) > 2 else ""
         correct_flag = session["extra"].get("correct_flag", "")
-        
+
         if selected_flag == correct_flag:
+            series = session["series"]
+            solved = session["solved"] + 1
+            job_count = session["job_count"]
+            reward = session["reward"]
+            total_earned = session.get("total_earned", 0) + reward
             job_sessions.pop(uid, None)
-            u = await db_task(_get_user, uid, cid, "")
-            new_count = session["job_count"] + 1
-            new_money = u["money"] + session["reward"]
-            new_black = u["black_money"] + session["reward_black"]
-            await async_upd(uid, cid, {
-                "money": new_money,
-                "black_money": new_black,
-                "last_job": time.time(),
-                "job_count": new_count,
-            })
             try:
                 await call.message.delete()
             except Exception:
                 pass
-            reward_str = f"+{session['reward']}💰"
-            if session["reward_black"]:
-                reward_str += f" +{session['reward_black']}🖤"
-            await call.answer(f"✅ Правильно! {reward_str}", show_alert=True)
+            await call.answer(f"✅ Правильно! Накоплено: {total_earned}💰", show_alert=True)
+            if series < JOB_SERIES_COUNT:
+                await _start_job_task(call.message, uid, cid, job_count, series + 1, solved, total_earned)
+            else:
+                await _finish_job_series(call, uid, cid, solved, job_count, total_earned, is_call=True)
         else:
-            await call.answer("❌ Неверный флаг! Попробуй ещё раз.", show_alert=True)
+            await call.answer("❌ Неверный флаг!", show_alert=True)
         return
-    
+
     await call.answer()
 
 # ─── CALLBACK ДЛЯ ВИСЕЛИЦЫ ────────────────────────────────────────────────────
@@ -2842,69 +2809,55 @@ async def hangman_callback_handler(call: types.CallbackQuery):
     all_guessed = all(ch in guessed or ch in '- ' for ch in word.lower())
     
     if all_guessed:
+        series = session["series"]
+        solved = session["solved"] + 1
+        job_count = session["job_count"]
+        reward = session["reward"]
+        total_earned = session.get("total_earned", 0) + reward
         job_sessions.pop(uid, None)
-        u = await db_task(_get_user, uid, cid, "")
-        new_count = session["job_count"] + 1
-        new_money = u["money"] + session["reward"]
-        new_black = u["black_money"] + session["reward_black"]
-        await async_upd(uid, cid, {
-            "money": new_money,
-            "black_money": new_black,
-            "last_job": time.time(),
-            "job_count": new_count,
-        })
         try:
             await call.message.edit_text(
-                f"✅ Победа! Слово: **{word.upper()}**\n\n"
-                f"{art}\n`{display}`\n\n"
-                f"Награда: +{session['reward']}💰"
-                + (f" +{session['reward_black']}🖤" if session["reward_black"] else ""),
-                reply_markup=None,
-                parse_mode="Markdown"
+                f"✅ Слово: **{word.upper()}**\n\n{art}\n`{display}`\n\nНакоплено: {total_earned}💰 | [{series}/{JOB_SERIES_COUNT}]",
+                reply_markup=None, parse_mode="Markdown"
             )
         except Exception:
-            try:
-                await call.message.delete()
-            except Exception:
-                pass
-        await call.answer(f"✅ Угадал! +{session['reward']}💰", show_alert=False)
+            pass
+        await call.answer(f"✅ Угадал! Накоплено: {total_earned}💰", show_alert=False)
+        if series < JOB_SERIES_COUNT:
+            await _start_job_task(call.message, uid, cid, job_count, series + 1, solved, total_earned)
+        else:
+            await _finish_job_series(call, uid, cid, solved, job_count, total_earned, is_call=True)
         return
-    
+
     # Проверяем поражение
     if errors >= max_errors:
+        solved = session["solved"]
+        job_count = session["job_count"]
+        total_earned = session.get("total_earned", 0)
         job_sessions.pop(uid, None)
         try:
             await call.message.edit_text(
-                f"💀 Проигрыш! Слово было: **{word.upper()}**\n\n"
-                f"{art}\n`{display}`",
-                reply_markup=None,
-                parse_mode="Markdown"
+                f"💀 Слово было: **{word.upper()}**\n\n{art}\n`{display}`",
+                reply_markup=None, parse_mode="Markdown"
             )
         except Exception:
-            try:
-                await call.message.delete()
-            except Exception:
-                pass
-        await call.answer(f"💀 Много ошибок! Слово: {word}", show_alert=True)
+            pass
+        await call.answer(f"💀 Слово: {word}", show_alert=True)
+        await _finish_job_series(call, uid, cid, solved, job_count, total_earned, is_call=True)
         return
-    
+
     # Обновляем клавиатуру
     kb = _make_hangman_keyboard(uid, word, guessed, errors)
-    
     text = (
-        f"💼 Задание ({session['difficulty']})!\n\n"
-        f"{session.get('question', 'Угадай слово!')}\n\n"
+        f"💼 Серия [{session['series']}/{JOB_SERIES_COUNT}] | Решено: {session['solved']}\n\n"
+        f"{session['current'].get('question', 'Угадай слово!')}\n\n"
         f"{art}\n`{display}`\n\n"
-        f"Ошибок: {errors}/{max_errors}\n"
-        f"Награда: +{session['reward']}💰"
-        + (f" +{session['reward_black']}🖤" if session["reward_black"] else "")
+        f"Ошибок: {errors}/{max_errors} | Награда за задание: +{session['reward']}💰"
     )
-    
     try:
         await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     except Exception:
         pass
-    
     await call.answer()
 
 # ─── /casino ──────────────────────────────────────────────────────────────────
