@@ -1195,12 +1195,12 @@ async def job_task_timer(uid: int, cid: int, msg_id: int, deadline: float):
         salary_mult = calc_job_salary(job_count)
         total_money = max(0, int(total_earned * salary_mult))
 
+        # ─── last_job уже выставлен при старте, обновляем только счётчик и деньги ───
         if solved > 0 or total_earned > 0:
             new_money = u["money"] + total_money
             new_count = job_count + solved
             await async_upd(uid, cid, {
                 "money": new_money,
-                "last_job": time.time(),
                 "job_count": new_count,
             })
 
@@ -2460,8 +2460,11 @@ async def cmd_job(m: types.Message):
         if uid in job_sessions:
             return await reply_auto(m, "⚠️ У вас уже есть активное задание! Ответьте на него.")
 
+        # ─── КД начинает идти сразу при старте серии ───
+        await async_upd(uid, cid, {"last_job": now})
+
         job_count = u.get("job_count", 0)
-        await _start_job_task(m, uid, cid, job_count, series=1, solved=0)
+        await _start_job_task(m, uid, cid, job_count, series=1, solved=0, total_earned=0)
 
     except Exception as e:
         logger.error(f"/job error: {e}", exc_info=True)
@@ -2560,7 +2563,6 @@ async def _finish_job_series(
 
     await async_upd(uid, cid, {
         "money": new_money,
-        "last_job": time.time(),
         "job_count": new_count,
     })
 
