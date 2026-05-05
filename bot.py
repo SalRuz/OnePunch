@@ -51,7 +51,7 @@ async def _delete_later(chat_id: int, message_id: int, delay: int = 300):
 
 async def reply_auto(m: types.Message, text: str, delay: int = 300, **kwargs) -> types.Message:
     """Отправить ответ с авто-удалением."""
-    msg = await reply_auto(m, text, **kwargs)
+    msg = await m.answer(text, **kwargs)
     asyncio.create_task(_delete_later(m.chat.id, msg.message_id, delay))
     return msg
 
