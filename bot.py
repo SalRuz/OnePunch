@@ -20,23 +20,8 @@ DB_PATH = DATA_DIR / "bot.db"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ─── Активные сессии интерактивных заданий ────────────────────────────────────
 job_sessions: dict = {}
-# job_sessions[uid] = {
-#   "chat_id": int,
-#   "series": int,          # номер текущего задания в серии (1-5)
-#   "solved": int,          # сколько решено верно
-#   "current": dict,        # текущее задание (generate_job_task результат)
-#   "type": str,
-#   "answer": str,
-#   "answers": list,
-#   "msg_id": int,
-#   "deadline": float,
-#   "reward": int,          # награда за каждое задание
-#   "difficulty": str,
-#   "job_count": int,
-#   "extra": dict,
-# }
+sapper_sessions: dict = {}
 
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
@@ -2710,8 +2695,9 @@ async def shop_h(call: types.CallbackQuery):
     await shop_cb(call)
 
 # ─── ОБРАБОТЧИК ОТВЕТОВ НА ЗАДАНИЯ /JOB ──────────────────────────────────────
+# ВАЖНО: этот хендлер должен быть ПОСЛЕДНИМ
 
-@dp.message()
+@dp.message(lambda m: m.text and not m.text.startswith("/") and m.from_user and m.from_user.id in job_sessions)
 async def handle_job_answer(m: types.Message):
     uid = m.from_user.id
     cid = m.chat.id
@@ -2719,8 +2705,6 @@ async def handle_job_answer(m: types.Message):
         return
     session = job_sessions[uid]
     if session["chat_id"] != cid:
-        return
-    if not m.text or m.text.startswith("/"):
         return
 
     user_ans = m.text.strip()
