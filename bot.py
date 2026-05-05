@@ -2855,7 +2855,122 @@ async def cmd_give(m: types.Message):
         logger.error(f"/give error: {e}", exc_info=True)
         await reply_auto(m, "⚠️ Ошибка передачи монет")
 
-# ─── /911 ──────────────────────────────────────────────────────────.
+# ─── /911 ─────────────────────────────────────────────────────────────────────
+
+@dp.message(Command("911"))
+async def cmd_911(m: types.Message):
+    try:
+        uid = m.from_user.id
+        cid = m.chat.id
+        name = clean_nick(m.from_user.full_name)
+        await db_task(_get_user, uid, cid, name)
+        await db_task(_upd_username, uid, cid, name)
+        u = await db_task(_get_user, uid, cid, name)
+        display = u.get("username") or name
+
+        rec = await db_task(_get_kidnapped_by_victim, uid, cid)
+        if not rec or rec.get("sold") != 1:
+            return await reply_auto(m, "🚔 /911 можно вызвать только находясь в рабстве!")
+
+        if rec.get("handcuffed", 0):
+            return await reply_auto(m, "⛓️ В наручниках нельзя вызвать копов! Сначала /freed.")
+
+        now = time.time()
+        cd = 18000 - (now - u.get("last_911", 0))
+        if cd > 0:
+            return await reply_auto(m, f"🚔 /911 доступен через {format_time(cd)}")
+
+        client_id = rec.get("slave_owner_id", 0)
+        rounds_needed = 3
+        jammer_active = False
+        if client_id:
+            client_data = await db_task(_get_user, client_id, cid, "")
+            if client_data.get("jammer_until", 0) > now:
+                rounds_needed = 10
+                jammer_active = True
+
+        mines_list = [min(5 + (i % 3) * 2, SAPPER_ROWS * SAPPER_COLS - 5) for i in range(rounds_needed)]
+        board = _make_board(SAPPER_ROWS, SAPPER_COLS, mines_list[0])
+        revealed = [[False] * SAPPER_COLS for _ in range(SAPPER_ROWS)]
+
+        session = {
+            "chat_id": cid, "round": 1, "rounds_total": rounds_needed,
+            "mines_list": mines_list, "board": board, "revealed": revealed,
+            "rows": SAPPER_ROWS, "cols": SAPPER_COLS, "mines": mines_list[0],
+            "msg_id": None, "slave_rec_id": rec["id"],
+            "client_id": client_id,
+            "client_name": rec.get("slave_owner_name", "?"),
+        }
+        sapper_sessions[uid] = session
+        await async_upd(uid, cid, {"last_911": now})
+
+        jammer_note = "\n📡 Глушилка активна — нужно 10 сапёров!" if jammer_active else ""
+        kb = _sapper_keyboard(session)
+        sent = await reply_auto(m,
+            f"🚔 {display} вызывает копов!\n\n"
+            f"Реши {rounds_needed} сапёра(ов) подряд чтобы освободиться!\n"
+            f"{jammer_note}\n\n"
+            f"📋 Раунд 1/{rounds_needed} | Мин: {mines_list[0]}\n"
+            f"Открой все безопасные клетки!",
+            reply_markup=kb
+        )
+        sapper_sessions[uid]["msg_id"] = sent.message_id
+    except Exception as e:
+        logger.error(f"/911 error: {e}", exc_info=True)
+        await reply_auto(m, "⚠️ Ошибка")
+
+@dp.callback_query(lambda c: c.data.startswith("sap:"))
+async def sapper_cb(call: types.CallbackQuery):
+    try:
+        uid = call.from_user.id
+        cid = call.message.chat.id
+
+        if uid not in sapper_sessions:
+            return await call.answer("❌ Нет активной игры!", show_alert=True)
+
+        session = sapper_sessions[uid]
+        if session["chat_id"] != cid:
+            return await call.answer("❌ Не ваша игра!", show_alert=True)
+
+        parts = call.data.split(":")
+        action = parts[1]
+
+        if action == "info":
+            return await call.answer("ℹ️ Открывай синие клетки — избегай мин!", show_alert=False)
+        if action == "hit":
+            return await call.answer("💥 Тут уже открыто!", show_alert=False)
+        if action != "open":
+            return await call.answer()
+
+        r, c = int(parts[2]), int(parts[3])
+        board = session["board"]
+        revealed = session["revealed"]
+
+        if revealed[r][c]:
+            return await call.answer("Уже открыто!", show_alert=False)
+
+        if board[r][c] == 1:
+            for rr in range(session["rows"]):
+                for cc in range(session["cols"]):
+                    if board[rr][cc] == 1:
+                        revealed[rr][cc] = True
+            del sapper_sessions[uid]
+            await call.answer("💥 МИНА! Вызов провалился!", show_alert=True)
+            try:
+                await edit_and_delete(
+                    call.message,
+                    f"💥 {call.from_user.full_name} подорвался на мине!\n"
+                    f"Копы не приедут. Попробуй
+
+Я вижу проблему. В вашем коде обработчик `handle_job_answer` зарегистрирован через `@dp.message()` **без фильтров**, что означает что он перехватывает **все** сообщения до других команд, поскольку в aiogram 3.x порядок регистрации хендлеров важен.
+
+Также проблема в том, что `@dp.message()` (catch-all) регистрируется **раньше** чем некоторые команды если они идут после него в коде — но в вашем случае он идёт после команд, значит команды должны работать. Проверим внимательнее...
+
+Реальная проблема: **`AutoDeleteMiddleware`** вызывает `await handler(event, data)` и возвращает результат, но не блокирует — это нормально. Однако `handle_job_answer` с `@dp.message()` без фильтра **перехватывает все сообщения включая команды** если зарегистрирован первым в каком-то роутере... 
+
+На самом деле главная проблема: у вас `@dp.message()` (catch-all хендлер) зарегистрирован, и в aiogram 3.x он может конфликтовать. Вот исправленная вторая часть:
+
+```python
 @dp.message(Command("911"))
 async def cmd_911(m: types.Message):
     try:
@@ -3110,7 +3225,8 @@ async def income_loop():
         await asyncio.sleep(300)
 
 
-# ─── Обработчик ответов на задания (ПОСЛЕДНИЙ хендлер!) ───────────────────────
+# ─── Обработчик ответов на задания ────────────────────────────────────────────
+# ВАЖНО: этот хендлер должен быть ПОСЛЕДНИМ
 
 @dp.message(lambda m: m.text and not m.text.startswith("/") and m.from_user and m.from_user.id in job_sessions)
 async def handle_job_answer(m: types.Message):
@@ -3174,9 +3290,35 @@ async def main():
     asyncio.create_task(income_loop())
     await dp.start_polling(bot)
 
-
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
         logger.critical(f"CRASH: {e}", exc_info=True)
+```
+
+**Главное изменение** — строка регистрации `handle_job_answer`:
+
+**Было:**
+```python
+@dp.message()
+async def handle_job_answer(m: types.Message):
+    uid = m.from_user.id
+    cid = m.chat.id
+    if uid not in job_sessions:
+        return
+    if not m.text or m.text.startswith("/"):
+        return
+```
+
+**Стало:**
+```python
+@dp.message(lambda m: m.text and not m.text.startswith("/") and m.from_user and m.from_user.id in job_sessions)
+async def handle_job_answer(m: types.Message):
+```
+
+**Почему это чинит проблему:**
+
+В aiogram 3.x хендлер `@dp.message()` без фильтров **регистрируется как catch-all** и в middleware вызывается для всех сообщений. Хотя внутри была проверка `if uid not in job_sessions: return` — в некоторых версиях aiogram это всё равно **поглощало** событие и другие хендлеры не получали его.
+
+Теперь фильтр `lambda` проверяет условия **до** вызова хендлера, и если пользователь не в `job_sessions` — хендлер просто не вызывается, позволяя другим командам работать нормально.
