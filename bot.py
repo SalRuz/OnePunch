@@ -2609,27 +2609,26 @@ async def cmd_sport(m: types.Message):
         uid = m.from_user.id
         cid = m.chat.id
         name = clean_nick(m.from_user.full_name)
-
         await db_task(_get_user, uid, cid, name)
         await db_task(_upd_username, uid, cid, name)
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await reply_and_delete(m, reason)
+            return await reply_auto(m, reason)
 
         tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
         if tranqed:
-            return await reply_and_delete(m, f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
+            return await reply_auto(m, f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
         u = await db_task(_get_user, uid, cid, name)
         if u["hp"] <= 0:
-            return await reply_and_delete(m, "💀 0 HP! Тренировки запрещены")
+            return await reply_auto(m, "💀 0 HP! Тренировки запрещены")
 
         now = time.time()
         sport_cd = calc_sport_cooldown(u.get("stat_gigachad", 0))
         cd = sport_cd - (now - (u["last_sport"] or 0))
         if cd > 0:
-            return await reply_and_delete(m, f"⏳ Тренировка доступна через {format_time(cd)}")
+            return await reply_auto(m, f"⏳ Тренировка доступна через {format_time(cd)}")
 
         st = random.choice(POSITIVE_STATS)
         old_val = u.get(st, 0)
@@ -2637,20 +2636,17 @@ async def cmd_sport(m: types.Message):
         await async_upd(uid, cid, {st: nv, "last_sport": now})
 
         msg = f"🏋️ {u['username']} прокачал {STAT_NAMES[st]}: {old_val}% → {nv}%"
-
         if st == "stat_regen":
-            msg += f"\n⏱ Время регена: {format_time(calc_regen_time(nv))}/HP"
+            msg += f"\n⏱ Реген: {format_time(calc_regen_time(nv))}/HP"
         elif st == "stat_success":
-            new_job_cd = calc_job_cooldown(nv)
-            msg += f"\n⏱ КД работы теперь: {format_time(new_job_cd)}"
+            msg += f"\n⏱ КД работы: {format_time(calc_job_cooldown(nv))}"
         elif st == "stat_gigachad":
-            new_sport_cd = calc_sport_cooldown(nv)
-            msg += f"\n⏱ КД спорта теперь: {format_time(new_sport_cd)}"
+            msg += f"\n⏱ КД спорта: {format_time(calc_sport_cooldown(nv))}"
 
-        await reply_and_delete(m, msg)
+        await reply_auto(m, msg)
     except Exception as e:
         logger.error(f"/sport error: {e}", exc_info=True)
-        await reply_and_delete(m, "⚠️ Ошибка тренировки")
+        await reply_auto(m, "⚠️ Ошибка тренировки")  # ← было reply_and_delete, исправлено на reply_auto
 
 # ─── /shop ────────────────────────────────────────────────────────────────────
 
