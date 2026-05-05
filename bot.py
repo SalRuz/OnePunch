@@ -49,14 +49,20 @@ async def _delete_later(chat_id: int, message_id: int, delay: int = 300):
     except Exception:
         pass
 
-async def reply_and_delete(m: types.Message, text: str, delay: int = 300, **kwargs):
-    """Отправляет ответ и планирует его удаление."""
-    sent = await m.answer(text, **kwargs)
-    asyncio.create_task(_delete_later(sent.chat.id, sent.message_id, delay))
-    return sent
+async def reply_auto(m: types.Message, text: str, delay: int = 300, **kwargs) -> types.Message:
+    """Отправить ответ с авто-удалением."""
+    msg = await reply_auto(m, text, **kwargs)
+    asyncio.create_task(_delete_later(m.chat.id, msg.message_id, delay))
+    return msg
+
+async def send_auto(chat_id: int, text: str, delay: int = 300, **kwargs) -> types.Message:
+    """Отправить сообщение с авто-удалением."""
+    msg = await bot.send_message(chat_id, text, **kwargs)
+    asyncio.create_task(_delete_later(chat_id, msg.message_id, delay))
+    return msg
 
 async def send_permanent(chat_id: int, text: str, **kwargs) -> types.Message:
-    """Отправляет сообщение БЕЗ авто-удаления (для важных уведомлений)."""
+    """Отправить сообщение БЕЗ авто-удаления."""
     return await bot.send_message(chat_id, text, **kwargs)
 
 async def edit_and_delete(msg: types.Message, text: str, delay: int = 300, **kwargs):
@@ -85,30 +91,7 @@ class AutoDeleteMiddleware(BaseMiddleware):
                 asyncio.create_task(_delete_later(event.chat.id, event.message_id))
         return result
 
-class AutoDeleteResponseMiddleware(BaseMiddleware):
-    """
-    Авто-удаление ответов бота через 5 минут.
-    Подменяет метод answer у каждого сообщения для планирования удаления.
-    """
-    async def __call__(self, handler, event: TelegramObject, data: dict):
-        if isinstance(event, types.Message):
-            _event = event
-            _original_answer = types.Message.answer
-
-            async def answer_with_delete(text, *args, _no_delete=False, **kwargs):
-                msg = await _original_answer(_event, text, *args, **kwargs)
-                if not _no_delete and msg:
-                    asyncio.create_task(
-                        _delete_later(_event.chat.id, msg.message_id, 300)
-                    )
-                return msg
-
-            event.answer = answer_with_delete
-
-        return await handler(event, data)
-
 dp.message.middleware(AutoDeleteMiddleware())
-dp.message.middleware(AutoDeleteResponseMiddleware())
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -1243,7 +1226,7 @@ async def job_task_timer(uid: int, cid: int, msg_id: int, deadline: float):
             })
 
         correct_ans = session.get("answer", "?")
-        await bot.send_message(
+        await send_auto(
             cid,
             f"⏰ {uname}, время вышло!\n"
             f"Правильный ответ: **{correct_ans}**\n\n"
@@ -1971,7 +1954,7 @@ async def show_stats(m: types.Message, uid: int, cid: int, name: str):
         for ef in effects_lines:
             lines.append(f"   {ef}")
 
-    await m.answer("\n".join(lines))
+    await reply_auto(m, "\n".join(lines))
 
 # ─── Удар ──────────────────────────────────────────────────────────────────────
 
@@ -1987,51 +1970,36 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
             cd = punch_cd - (now - (att["last_punch"] or 0))
             if cd > 0:
                 adren_note = " (🔥 адреналин)" if att.get("adren_until", 0) > now else ""
-                msg = await bot.send_message(
-                    cid, f"⏳ {att['username']}, кулдаун{adren_note}: {format_time(cd)}"
-                )
-                asyncio.create_task(_delete_later(cid, msg.message_id))
+                await send_auto(cid, f"⏳ {att['username']}, кулдаун{adren_note}: {format_time(cd)}")
                 return
 
         # ── Косость атакующего — шанс промаха ──
         cross = att.get("debuff_cross", 0)
         if cross > 0 and random.randint(1, 100) <= cross:
-            msg = await bot.send_message(
-                cid,
-                f"🎯 {att['username']} промахнулся! (косость {cross}%)"
-            )
-            asyncio.create_task(_delete_later(cid, msg.message_id))
+            await send_auto(cid, f"🎯 {att['username']} промахнулся! (косость {cross}%)")
             if not auto:
                 await async_upd(aid, cid, {"last_punch": now})
             return
 
         if vic["shield"] == 1:
             await async_upd(vid, cid, {"shield": 0})
-            msg = await bot.send_message(cid, f"🛡️ Щит {vic['username']} поглотил удар!")
-            asyncio.create_task(_delete_later(cid, msg.message_id))
+            await send_auto(cid, f"🛡️ Щит {vic['username']} поглотил удар!")
             return
 
         if vic["debuff_payoff"] > 0 and vic["money"] > 0 and random.randint(1, 100) <= vic["debuff_payoff"]:
             amt = vic["money"] // 2
             await async_upd(vid, cid, {"money": vic["money"] - amt})
             await async_upd(aid, cid, {"money": att["money"] + amt})
-            msg = await bot.send_message(cid, f"💸 Откуп! {vic['username']} отдал {amt}💰")
-            asyncio.create_task(_delete_later(cid, msg.message_id))
+            await send_auto(cid, f"💸 Откуп! {vic['username']} отдал {amt}💰")
             return
 
         # ── Джиу-джитсу (с проверкой косости жертвы) ──
         if vic["stat_jiu"] > 0 and random.randint(1, 100) <= vic["stat_jiu"]:
             jiu_cross = vic.get("debuff_cross", 0)
             if jiu_cross > 0 and random.randint(1, 100) <= jiu_cross:
-                msg = await bot.send_message(
-                    cid, f"🥋 {vic['username']} попытался джиу-джитсу но промахнулся! (косость {jiu_cross}%)"
-                )
-                asyncio.create_task(_delete_later(cid, msg.message_id))
+                await send_auto(cid, f"🥋 {vic['username']} попытался джиу-джитсу но промахнулся! (косость {jiu_cross}%)")
             else:
-                msg = await bot.send_message(
-                    cid, f"🥋 {vic['username']} использовал джиу-джитсу! Контратака!"
-                )
-                asyncio.create_task(_delete_later(cid, msg.message_id))
+                await send_auto(cid, f"🥋 {vic['username']} использовал джиу-джитсу! Контратака!")
                 await do_punch(vid, vic["username"], aid, cid, auto=True)
             if not auto:
                 await async_upd(aid, cid, {"last_punch": now})
@@ -2039,8 +2007,7 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
 
         # ── Блок ──
         if vic["stat_block"] > 0 and random.randint(1, 100) <= vic["stat_block"]:
-            msg = await bot.send_message(cid, f"🛡️ {vic['username']} заблокировал удар!")
-            asyncio.create_task(_delete_later(cid, msg.message_id))
+            await send_auto(cid, f"🛡️ {vic['username']} заблокировал удар!")
             return
 
         base_dmg = 2 if att["glove_durability"] > 0 else 1
@@ -2062,8 +2029,7 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
             full_msg = f"💥 {txt}{house_note}{glove_msg}"
             if not auto:
                 await async_upd(aid, cid, {"last_punch": now})
-            sent = await bot.send_message(cid, full_msg)
-            asyncio.create_task(_delete_later(cid, sent.message_id))
+            await send_auto(cid, full_msg)
             return
 
         glove_msg = ""
@@ -2195,13 +2161,11 @@ async def do_punch(aid: int, aname: str, vid: int, cid: int, auto: bool = False)
         if not auto:
             await async_upd(aid, cid, {"last_punch": now})
 
-        sent = await bot.send_message(cid, msg_text)
-        asyncio.create_task(_delete_later(cid, sent.message_id))
+        sent = await send_auto(cid, msg_text)
 
     except Exception as e:
         logger.error(f"Punch error: {e}", exc_info=True)
-        sent = await bot.send_message(cid, "⚠️ Ошибка при ударе.")
-        asyncio.create_task(_delete_later(cid, sent.message_id))
+        sent = await send_auto(cid, "⚠️ Ошибка при ударе.")
 
 # ─── Магазин ──────────────────────────────────────────────────────────────────
 
@@ -2331,7 +2295,7 @@ async def shop_cb(call: types.CallbackQuery):
 # ─── Глобальный обработчик ошибок ─────────────────────────────────────────────
 
 @dp.errors()
-async def errors_handler(update: types.Update, exception: Exception):
+async def errors_handler(update, exception: Exception):
     logger.error(f"UNHANDLED: {type(exception).__name__}: {exception}", exc_info=True)
     return True
 
@@ -2355,7 +2319,7 @@ async def cmd_help(m: types.Message):
             kb.button(text=t, callback_data=f"qcmd:{d}")
         kb.adjust(2)
 
-        await m.answer(
+        await reply_auto(m, 
             "📖 Помощь\n\n"
             "🥊 /punch (ответ или @тег) — удар (кд 30м)\n"
             "💼 /job — работа (+1💰, кд 1ч)\n"
@@ -2404,7 +2368,7 @@ async def cmd_help(m: types.Message):
         )
     except Exception as e:
         logger.error(f"/help error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка")
+        await reply_auto(m, "⚠️ Ошибка")
 
 # ─── Quick cmd callback ────────────────────────────────────────────────────────
 
@@ -2443,7 +2407,7 @@ async def cmd_stats(m: types.Message):
             await show_stats(m, uid, cid, name)
     except Exception as e:
         logger.error(f"/stats error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка загрузки статов")
+        await reply_auto(m, "⚠️ Ошибка загрузки статов")
 
 # ─── /punch ───────────────────────────────────────────────────────────────────
 
@@ -2459,23 +2423,23 @@ async def cmd_punch(m: types.Message):
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await m.answer(reason)
+            return await reply_auto(m, reason)
 
         tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
         if tranqed:
-            return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
+            return await reply_auto(m, f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
         u = await db_task(_get_user, uid, cid, name)
         if u["hp"] <= 0:
-            return await m.answer("💀 0 HP! Ждите реген или купите жизнь в /shop")
+            return await reply_auto(m, "💀 0 HP! Ждите реген или купите жизнь в /shop")
 
         tid, tfull = await resolve_target(m, cid)
         if not tid:
-            return await m.answer("⚠️ Ответьте на сообщение игрока или укажите @тег!")
+            return await reply_auto(m, "⚠️ Ответьте на сообщение игрока или укажите @тег!")
         if tid == bot.id:
-            return await m.answer("🤖 Ботов не бьём!")
+            return await reply_auto(m, "🤖 Ботов не бьём!")
         if tid == uid:
-            return await m.answer("🤡 Себя бить нельзя!")
+            return await reply_auto(m, "🤡 Себя бить нельзя!")
 
         tname = clean_nick(tfull)
         await db_task(_get_user, tid, cid, tname)
@@ -2483,7 +2447,7 @@ async def cmd_punch(m: types.Message):
         await do_punch(uid, u["username"], tid, cid)
     except Exception as e:
         logger.error(f"/punch error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка удара")
+        await reply_auto(m, "⚠️ Ошибка удара")
 
 # ─── /job ─────────────────────────────────────────────────────────────────────
 
@@ -2499,31 +2463,31 @@ async def cmd_job(m: types.Message):
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await m.answer(reason)
+            return await reply_auto(m, reason)
 
         tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
         if tranqed:
-            return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
+            return await reply_auto(m, f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
         u = await db_task(_get_user, uid, cid, name)
         if u["hp"] <= 0:
-            return await m.answer("💀 0 HP! Нельзя работать")
+            return await reply_auto(m, "💀 0 HP! Нельзя работать")
 
         now = time.time()
         job_cd = calc_job_cooldown(u.get("stat_success", 0))
         cd = job_cd - (now - (u.get("last_job") or 0))
         if cd > 0:
-            return await m.answer(f"⏳ Работа доступна через {format_time(cd)}")
+            return await reply_auto(m, f"⏳ Работа доступна через {format_time(cd)}")
 
         if uid in job_sessions:
-            return await m.answer("⚠️ У вас уже есть активное задание! Ответьте на него.")
+            return await reply_auto(m, "⚠️ У вас уже есть активное задание! Ответьте на него.")
 
         job_count = u.get("job_count", 0)
         await _start_job_task(m, uid, cid, job_count, series=1, solved=0)
 
     except Exception as e:
         logger.error(f"/job error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка работы")
+        await reply_auto(m, "⚠️ Ошибка работы")
 
 
 # ─── /sport ───────────────────────────────────────────────────────────────────
@@ -2558,7 +2522,7 @@ async def _start_job_task(
             f"Награда за задание: {reward_money}💰\n"
             f"⏰ Таймер: {format_time(task['timer'])}"
         )
-        sent = await m.answer(text, reply_markup=kb, parse_mode="Markdown")
+        sent = await reply_auto(m, text, reply_markup=kb, parse_mode="Markdown")
 
     elif task["type"] == "reverse_flag":
         builder = InlineKeyboardBuilder()
@@ -2577,7 +2541,7 @@ async def _start_job_task(
             f"Награда за задание: {reward_money}💰\n"
             f"⏰ {format_time(task['timer'])}"
         )
-        sent = await m.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+        sent = await reply_auto(m, text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
     else:
         kb = _make_job_keyboard(uid)
@@ -2589,7 +2553,7 @@ async def _start_job_task(
             f"⏰ Времени: {format_time(task['timer'])}\n\n"
             f"Напишите ответ в чат."
         )
-        sent = await m.answer(text, reply_markup=kb, parse_mode="Markdown")
+        sent = await reply_auto(m, text, reply_markup=kb, parse_mode="Markdown")
 
     job_sessions[uid] = {
         "chat_id": cid,
@@ -2726,7 +2690,7 @@ async def cmd_shop(m: types.Message):
             [InlineKeyboardButton(text="🔥 Адреналин (КД 15м) — 3🖤", callback_data="shop:adren")],
             [InlineKeyboardButton(text="📡 Глушилка (10 сап., 3д) — 3🖤", callback_data="shop:jammer")],
         ])
-        await m.answer(
+        await reply_auto(m, 
             "🏪 Магазин\n\n"
             "🏠 Дом — защита 30 ударов (щит→дом по приоритету)\n"
             "🥊 Перчатка — x2 урон, 10 ударов\n"
@@ -2739,7 +2703,7 @@ async def cmd_shop(m: types.Message):
         )
     except Exception as e:
         logger.error(f"/shop error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка магазина")
+        await reply_auto(m, "⚠️ Ошибка магазина")
 
 @dp.callback_query(lambda c: c.data.startswith("shop:"))
 async def shop_h(call: types.CallbackQuery):
@@ -2781,12 +2745,12 @@ async def handle_job_answer(m: types.Message):
         reward_str = f"+{session['reward']}💰"
         if session["reward_black"]:
             reward_str += f" +{session['reward_black']}🖤"
-        await m.answer(
+        await reply_auto(m, 
             f"✅ Правильно! {reward_str}\n"
             f"💰 Баланс: {new_money} | Работ: {new_count}"
         )
     else:
-        await m.answer(f"❌ Неверно, попробуй ещё раз!")
+        await reply_auto(m, f"❌ Неверно, попробуй ещё раз!")
 
 # ─── CALLBACK ДЛЯ ЗАДАНИЙ (флаги, виселица, сдаться) ─────────────────────────
 
@@ -2973,27 +2937,27 @@ async def cmd_casino(m: types.Message):
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await m.answer(reason)
+            return await reply_auto(m, reason)
 
         tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
         if tranqed:
-            return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
+            return await reply_auto(m, f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
         u = await db_task(_get_user, uid, cid, name)
         if u["hp"] <= 0:
-            return await m.answer("💀 0 HP! Казино закрыто")
+            return await reply_auto(m, "💀 0 HP! Казино закрыто")
 
         parts = m.text.split()
         if len(parts) < 2:
-            return await m.answer("🎰 Использование: /casino <сумма>")
+            return await reply_auto(m, "🎰 Использование: /casino <сумма>")
         try:
             bet = int(parts[1])
         except ValueError:
-            return await m.answer("❌ Введите целое число")
+            return await reply_auto(m, "❌ Введите целое число")
         if bet <= 0:
-            return await m.answer("❌ Ставка > 0")
+            return await reply_auto(m, "❌ Ставка > 0")
         if u["money"] < bet:
-            return await m.answer(f"💸 Нужно {bet}💰, у вас {u['money']}💰")
+            return await reply_auto(m, f"💸 Нужно {bet}💰, у вас {u['money']}💰")
 
         r = random.random()
         mult = 0 if r < 0.40 else 1 if r < 0.70 else 2 if r < 0.90 else 3 if r < 0.98 else 5
@@ -3002,14 +2966,14 @@ async def cmd_casino(m: types.Message):
         await async_upd(uid, cid, {"money": new_money, "casino_won": u["casino_won"] + win})
 
         labels = {0: "💀 Проигрыш", 1: "🔄 Возврат", 2: "🎉 x2!", 3: "🔥 x3!", 5: "💎 x5 ДЖЕКПОТ!!!"}
-        await m.answer(
+        await reply_auto(m, 
             f"🎰 {u['username']}: {labels[mult]}\n"
             f"Ставка: {bet}💰 | x{mult} | Выигрыш: {win}💰\n"
             f"💰 Баланс: {new_money}💰"
         )
     except Exception as e:
         logger.error(f"/casino error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка казино")
+        await reply_auto(m, "⚠️ Ошибка казино")
 
 # ─── /casinotop ───────────────────────────────────────────────────────────────
 
@@ -3028,17 +2992,17 @@ async def cmd_casinotop(m: types.Message):
             conn.close()
 
         if not rows:
-            return await m.answer("📊 Пока никто не играл в казино")
+            return await reply_auto(m, "📊 Пока никто не играл в казино")
 
         lines = ["🏆 Топ лудоманов чата:\n"]
         for i, row in enumerate(rows, 1):
             medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
             uname = row["username"] or f"User{i}"
             lines.append(f"{medal} {uname}: {row['casino_won']}💰")
-        await m.answer("\n".join(lines))
+        await reply_auto(m, "\n".join(lines))
     except Exception as e:
         logger.error(f"/casinotop error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка топа")
+        await reply_auto(m, "⚠️ Ошибка топа")
 
 # ─── /hill ────────────────────────────────────────────────────────────────────
 
@@ -3054,26 +3018,26 @@ async def cmd_hill(m: types.Message):
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await m.answer(reason)
+            return await reply_auto(m, reason)
 
         tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
         if tranqed:
-            return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
+            return await reply_auto(m, f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
         tid, tfull = await resolve_target(m, cid)
         if not tid:
-            return await m.answer("⚠️ Ответьте на сообщение игрока или укажите @тег!")
+            return await reply_auto(m, "⚠️ Ответьте на сообщение игрока или укажите @тег!")
         if tid == uid:
-            return await m.answer("🤡 Нельзя делиться HP с собой!")
+            return await reply_auto(m, "🤡 Нельзя делиться HP с собой!")
         if tid == bot.id:
-            return await m.answer("🤖 Боту HP не нужно!")
+            return await reply_auto(m, "🤖 Боту HP не нужно!")
 
         await db_task(_recalc_hp, uid, cid)
         u = await db_task(_get_user, uid, cid, name)
         sender_name = u.get("username") or name
 
         if u["hp"] <= 1:
-            return await m.answer(
+            return await reply_auto(m, 
                 f"❤️ {sender_name}, у вас {u['hp']} HP — нельзя делиться!\nНужно больше 1 HP."
             )
 
@@ -3085,7 +3049,7 @@ async def cmd_hill(m: types.Message):
         target_name = t.get("username") or tname
 
         if t["hp"] >= t["max_hp"]:
-            return await m.answer(
+            return await reply_auto(m, 
                 f"❤️ У {target_name} уже максимум HP ({t['hp']}/{t['max_hp']})!"
             )
 
@@ -3094,14 +3058,14 @@ async def cmd_hill(m: types.Message):
         await async_upd(uid, cid, {"hp": new_sender_hp})
         await async_upd(tid, cid, {"hp": new_target_hp})
 
-        await m.answer(
+        await reply_auto(m, 
             f"❤️ {sender_name} поделился 1 HP с {target_name}!\n"
             f"{sender_name}: {new_sender_hp}/{u['max_hp']} HP\n"
             f"{target_name}: {new_target_hp}/{t['max_hp']} HP"
         )
     except Exception as e:
         logger.error(f"/hill error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка")
+        await reply_auto(m, "⚠️ Ошибка")
 
 # ─── /kidnap ──────────────────────────────────────────────────────────────────
 
@@ -3117,23 +3081,23 @@ async def cmd_kidnap(m: types.Message):
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await m.answer(reason)
+            return await reply_auto(m, reason)
 
         tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
         if tranqed:
-            return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
+            return await reply_auto(m, f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
         u = await db_task(_get_user, uid, cid, name)
         if u["hp"] <= 0:
-            return await m.answer("💀 0 HP! Вы не можете похищать.")
+            return await reply_auto(m, "💀 0 HP! Вы не можете похищать.")
 
         tid, tfull = await resolve_target(m, cid)
         if not tid:
-            return await m.answer("⚠️ Ответьте на сообщение игрока или укажите @тег!")
+            return await reply_auto(m, "⚠️ Ответьте на сообщение игрока или укажите @тег!")
         if tid == uid:
-            return await m.answer("🤡 Нельзя похитить себя!")
+            return await reply_auto(m, "🤡 Нельзя похитить себя!")
         if tid == bot.id:
-            return await m.answer("🤖 Бота не похищают!")
+            return await reply_auto(m, "🤖 Бота не похищают!")
 
         tname = clean_nick(tfull)
         await db_task(_get_user, tid, cid, tname)
@@ -3143,13 +3107,13 @@ async def cmd_kidnap(m: types.Message):
         target_name = t.get("username") or tname
 
         if t["hp"] > 0:
-            return await m.answer(
+            return await reply_auto(m, 
                 f"❌ У {target_name} ещё есть HP ({t['hp']})! Похищать можно только при 0 HP."
             )
 
         existing = await db_task(_get_kidnapped_by_victim, tid, cid)
         if existing:
-            return await m.answer(f"🔒 {target_name} уже в чьём-то подвале или рабстве!")
+            return await reply_auto(m, f"🔒 {target_name} уже в чьём-то подвале или рабстве!")
 
         kid_name = u.get("username") or name
         await db_task(_add_kidnapped, tid, target_name, uid, kid_name, cid)
@@ -3162,7 +3126,7 @@ async def cmd_kidnap(m: types.Message):
         extra = len(transferred) - num
         transfer_msg = f"\n⚡ {extra} заложник(ов) {target_name} перешли к {kid_name}!" if extra > 0 else ""
 
-        await m.answer(
+        await reply_auto(m, 
             f"🔒 {kid_name} похитил {target_name} и запер в подвале!\n"
             f"Заложник #{num}.\n"
             f"Жертва может сбежать: /freed (кд 30м)\n"
@@ -3171,7 +3135,7 @@ async def cmd_kidnap(m: types.Message):
         )
     except Exception as e:
         logger.error(f"/kidnap error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка похищения")
+        await reply_auto(m, "⚠️ Ошибка похищения")
 
 # ─── /freed ───────────────────────────────────────────────────────────────────
 
@@ -3190,16 +3154,16 @@ async def cmd_freed(m: types.Message):
         # Проверка тюрьмы
         now_check = time.time()
         if u.get("jailed_until", 0) > now_check:
-            return await m.answer(f"🚔 Вы за решёткой! Осталось: {format_time(u['jailed_until'] - now_check)}")
+            return await reply_auto(m, f"🚔 Вы за решёткой! Осталось: {format_time(u['jailed_until'] - now_check)}")
 
         rec = await db_task(_get_kidnapped_by_victim, uid, cid)
         if not rec:
-            return await m.answer("🤷 Вы не в подвале и не в рабстве!")
+            return await reply_auto(m, "🤷 Вы не в подвале и не в рабстве!")
 
         now = time.time()
         cd = COOLDOWNS["freed"] - (now - (u["last_freed"] or 0))
         if cd > 0:
-            return await m.answer(f"⏳ Попытка побега через {format_time(cd)}")
+            return await reply_auto(m, f"⏳ Попытка побега через {format_time(cd)}")
 
         await async_upd(uid, cid, {"last_freed": now})
 
@@ -3213,13 +3177,13 @@ async def cmd_freed(m: types.Message):
             if rec["handcuffed"]:
                 if escape_chance >= 100 or random.randint(1, 100) <= escape_chance:
                     await db_task(_set_handcuffed, rec["id"], 0)
-                    return await m.answer(
+                    return await reply_auto(m, 
                         f"⛓️ {display} снял наручники в рабстве у {owner_name}!\n"
                         f"(шанс был {escape_chance}%)\n"
                         f"Теперь попробуй сбежать (/freed через 30м)"
                     )
                 else:
-                    return await m.answer(
+                    return await reply_auto(m, 
                         f"⛓️ {display} не смог снять наручники! (шанс был {escape_chance}%)\n"
                         f"Попробуй через 30м."
                     )
@@ -3229,13 +3193,13 @@ async def cmd_freed(m: types.Message):
                 client_id = rec.get("slave_owner_id", 0)
                 client_name = rec.get("slave_owner_name", "?")
                 await db_task(_escape_from_slavery, rec["id"], client_id, client_name)
-                return await m.answer(
+                return await reply_auto(m, 
                     f"🏃 {display} сбежал из рабства! (шанс был {escape_chance}%)\n"
                     f"Теперь {display} в подвале у {client_name}.\n"
                     f"Используй /freed ещё раз чтобы сбежать окончательно (кд 30м)."
                 )
             else:
-                return await m.answer(
+                return await reply_auto(m, 
                     f"😢 {display} не смог сбежать из рабства {owner_name}! "
                     f"(шанс был {escape_chance}%)\n"
                     f"Следующая попытка через 30м."
@@ -3248,13 +3212,13 @@ async def cmd_freed(m: types.Message):
         if rec["handcuffed"]:
             if escape_chance >= 100 or random.randint(1, 100) <= escape_chance:
                 await db_task(_set_handcuffed, rec["id"], 0)
-                return await m.answer(
+                return await reply_auto(m, 
                     f"⛓️ {display} снял наручники в подвале {kidnapper_name}!\n"
                     f"(шанс был {escape_chance}%)\n"
                     f"Теперь попробуй сбежать (/freed через 30м)"
                 )
             else:
-                return await m.answer(
+                return await reply_auto(m, 
                     f"⛓️ {display} не смог снять наручники! (шанс был {escape_chance}%)\n"
                     f"Попробуй через 30м."
                 )
@@ -3262,19 +3226,19 @@ async def cmd_freed(m: types.Message):
         # Финальный побег
         if escape_chance >= 100 or random.randint(1, 100) <= escape_chance:
             await db_task(_free_kidnapped, rec["id"])
-            await m.answer(
+            await reply_auto(m, 
                 f"🏃 {display} окончательно сбежал из подвала {kidnapper_name}! "
                 f"Свобода! (шанс был {escape_chance}%)"
             )
         else:
-            await m.answer(
+            await reply_auto(m, 
                 f"😢 {display} не смог сбежать из подвала {kidnapper_name}! "
                 f"(шанс был {escape_chance}%)\n"
                 f"Следующая попытка через 30м."
             )
     except Exception as e:
         logger.error(f"/freed error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка побега")
+        await reply_auto(m, "⚠️ Ошибка побега")
 
 # ─── /sell ────────────────────────────────────────────────────────────────────
 
@@ -3287,47 +3251,47 @@ async def cmd_sell(m: types.Message):
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await m.answer(reason)
+            return await reply_auto(m, reason)
 
         u = await db_task(_get_user, uid, cid, name)
 
         parts = m.text.split() if m.text else []
         if len(parts) < 2:
-            return await m.answer(
+            return await reply_auto(m, 
                 "⚠️ Использование: /sell <номер> (ответом или @тег покупателя)\n"
                 "Пример: /sell 1"
             )
         try:
             num = int(parts[1])
         except ValueError:
-            return await m.answer("❌ Укажите номер заложника")
+            return await reply_auto(m, "❌ Укажите номер заложника")
 
         hostages = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
         if not hostages or num < 1 or num > len(hostages):
             cnt = len(hostages) if hostages else 0
-            return await m.answer(f"❌ Заложник #{num} не найден. У вас {cnt} заложник(ов).")
+            return await reply_auto(m, f"❌ Заложник #{num} не найден. У вас {cnt} заложник(ов).")
 
         rec = hostages[num - 1]
         now = time.time()
         held = now - rec["kidnapped_at"]
 
         if held < 1800:
-            return await m.answer(f"⏳ Ещё {format_time(1800 - held)} до продажи.")
+            return await reply_auto(m, f"⏳ Ещё {format_time(1800 - held)} до продажи.")
         if rec["sold"] != 0:
-            return await m.answer("❌ Уже продан или освобождён!")
+            return await reply_auto(m, "❌ Уже продан или освобождён!")
 
         tid, tfull = await resolve_target(m, cid)
         if not tid:
-            return await m.answer(
+            return await reply_auto(m, 
                 "⚠️ Укажите покупателя: ответом на сообщение или @тег!\n"
                 "Пример: /sell 1 @покупатель"
             )
         if tid == uid:
-            return await m.answer("❌ Нельзя продать самому себе!")
+            return await reply_auto(m, "❌ Нельзя продать самому себе!")
         if tid == rec["victim_id"]:
-            return await m.answer("❌ Нельзя продать жертве самой себе!")
+            return await reply_auto(m, "❌ Нельзя продать жертве самой себе!")
         if tid == bot.id:
-            return await m.answer("❌ Бот не покупает!")
+            return await reply_auto(m, "❌ Бот не покупает!")
 
         tname = clean_nick(tfull)
         await db_task(_get_user, tid, cid, tname)
@@ -3341,14 +3305,14 @@ async def cmd_sell(m: types.Message):
         await db_task(_sell_kidnapped, rec["id"], tid, buyer_name)
         await async_upd(uid, cid, {"black_money": u["black_money"] + 1})
 
-        await m.answer(
+        await reply_auto(m, 
             f"💰 {seller_name} продал {victim_name} в рабство {buyer_name}!\n"
             f"🖤 {seller_name} получил 1🖤 за сделку.\n"
             f"Доход {buyer_name}: 1🖤 каждые 2 часа.\n"
             f"Жертва может сбежать через /freed."
         )
         try:
-            await bot.send_message(
+            await send_permanent(
                 cid,
                 f"😱 {victim_name} продан(а) в рабство к {buyer_name}!\n"
                 f"Используй /freed чтобы сбежать.\n"
@@ -3358,7 +3322,7 @@ async def cmd_sell(m: types.Message):
             pass
     except Exception as e:
         logger.error(f"/sell error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка продажи")
+        await reply_auto(m, "⚠️ Ошибка продажи")
 
 # ─── /handcuff ────────────────────────────────────────────────────────────────
 
@@ -3371,18 +3335,18 @@ async def cmd_handcuff(m: types.Message):
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await m.answer(reason)
+            return await reply_auto(m, reason)
 
         u = await db_task(_get_user, uid, cid, name)
         if u["handcuffs"] <= 0:
-            return await m.answer("⛓️ Нет наручников! Купи в /shop за 1🖤")
+            return await reply_auto(m, "⛓️ Нет наручников! Купи в /shop за 1🖤")
 
         hostages = await db_task(_get_kidnapped_by_kidnapper, uid, cid)
         slaves = await db_task(_get_slaves_by_owner, uid, cid)
         all_captives = hostages + slaves
 
         if not all_captives:
-            return await m.answer("🔒 Нет заложников или рабов!")
+            return await reply_auto(m, "🔒 Нет заложников или рабов!")
 
         target_rec = None
         parts = m.text.split() if m.text else []
@@ -3395,15 +3359,15 @@ async def cmd_handcuff(m: types.Message):
                     target_rec = h
                     break
             if not target_rec:
-                return await m.answer("❌ Этот игрок не ваш заложник или раб!")
+                return await reply_auto(m, "❌ Этот игрок не ваш заложник или раб!")
         elif len(parts) >= 2:
             try:
                 num = int(parts[1])
                 if num < 1 or num > len(all_captives):
-                    return await m.answer(f"❌ Заключённый #{num} не найден")
+                    return await reply_auto(m, f"❌ Заключённый #{num} не найден")
                 target_rec = all_captives[num - 1]
             except ValueError:
-                return await m.answer("❌ Укажите номер или @тег или ответьте на сообщение")
+                return await reply_auto(m, "❌ Укажите номер или @тег или ответьте на сообщение")
         else:
             lines = ["⛓️ Ваши заключённые:\n"]
             for i, h in enumerate(all_captives, 1):
@@ -3411,22 +3375,22 @@ async def cmd_handcuff(m: types.Message):
                 status = "🔒 подвал" if h["sold"] == 0 else "😈 раб"
                 lines.append(f"{i}. {h['victim_name']} [{status}]{cuffs}")
             lines.append("\nИспользование: /handcuff <номер> или @тег или ответом")
-            return await m.answer("\n".join(lines))
+            return await reply_auto(m, "\n".join(lines))
 
         if target_rec["handcuffed"]:
-            return await m.answer(f"⛓️ {target_rec['victim_name']} уже в наручниках!")
+            return await reply_auto(m, f"⛓️ {target_rec['victim_name']} уже в наручниках!")
 
         await db_task(_set_handcuffed, target_rec["id"], 1)
         await async_upd(uid, cid, {"handcuffs": u["handcuffs"] - 1})
         uname = u.get("username") or name
         status_str = "раба" if target_rec["sold"] == 1 else "заложника"
-        await m.answer(
+        await reply_auto(m, 
             f"⛓️ {uname} надел наручники на {target_rec['victim_name']} ({status_str})!\n"
             f"Жертве нужно дополнительно использовать /freed для снятия наручников."
         )
     except Exception as e:
         logger.error(f"/handcuff error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка")
+        await reply_auto(m, "⚠️ Ошибка")
 
 # ─── /trank ───────────────────────────────────────────────────────────────────
 
@@ -3442,25 +3406,25 @@ async def cmd_trank(m: types.Message):
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await m.answer(reason)
+            return await reply_auto(m, reason)
 
         tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
         if tranqed:
-            return await m.answer(f"💉 Вы сами под транквилизатором! Осталось: {format_time(t_left)}")
+            return await reply_auto(m, f"💉 Вы сами под транквилизатором! Осталось: {format_time(t_left)}")
 
         u = await db_task(_get_user, uid, cid, name)
         uname = u.get("username") or name
 
         if u.get("tranq_stock", 0) <= 0:
-            return await m.answer("💉 Нет транквилизатора! Купи в /shop за 4🖤")
+            return await reply_auto(m, "💉 Нет транквилизатора! Купи в /shop за 4🖤")
 
         tid, tfull = await resolve_target(m, cid)
         if not tid:
-            return await m.answer("⚠️ Ответьте на сообщение жертвы или укажите @тег!")
+            return await reply_auto(m, "⚠️ Ответьте на сообщение жертвы или укажите @тег!")
         if tid == uid:
-            return await m.answer("🤡 Нельзя транквилизировать себя!")
+            return await reply_auto(m, "🤡 Нельзя транквилизировать себя!")
         if tid == bot.id:
-            return await m.answer("🤖 Бота не транквилизируют!")
+            return await reply_auto(m, "🤖 Бота не транквилизируют!")
 
         tname = clean_nick(tfull)
         await db_task(_get_user, tid, cid, tname)
@@ -3470,20 +3434,20 @@ async def cmd_trank(m: types.Message):
 
         now = time.time()
         if t.get("tranq_until", 0) > now:
-            return await m.answer(f"💉 {target_name} уже под транквилизатором!")
+            return await reply_auto(m, f"💉 {target_name} уже под транквилизатором!")
 
         tranq_end = now + 10800
         await async_upd(tid, cid, {"tranq_until": tranq_end, "last_hp_update": now})
         await async_upd(uid, cid, {"tranq_stock": u["tranq_stock"] - 1})
 
-        await m.answer(
+        await reply_auto(m, 
             f"💉 {uname} вколол транквилизатор {target_name}!\n"
             f"Паралич на 3 часа. Реген остановлен.\n"
             f"Осталось транков: {u['tranq_stock'] - 1} шт."
         )
     except Exception as e:
         logger.error(f"/trank error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка")
+        await reply_auto(m, "⚠️ Ошибка")
 
 # ─── /adren ───────────────────────────────────────────────────────────────────
 
@@ -3502,19 +3466,19 @@ async def cmd_adren(m: types.Message):
 
         if u.get("adren_until", 0) > now:
             remaining = u["adren_until"] - now
-            await m.answer(
+            await reply_auto(m, 
                 f"🔥 {uname}, адреналин активен!\n"
                 f"Осталось: {format_time(remaining)}\n"
                 f"КД удара сейчас: 15 минут"
             )
         else:
-            await m.answer(
+            await reply_auto(m, 
                 f"🔥 {uname}, адреналин не активен.\n"
                 f"Купи в /shop за 3🖤 — КД удара станет 15м на 3ч."
             )
     except Exception as e:
         logger.error(f"/adren error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка")
+        await reply_auto(m, "⚠️ Ошибка")
 
 # ─── /give ────────────────────────────────────────────────────────────────────
 
@@ -3530,11 +3494,11 @@ async def cmd_give(m: types.Message):
 
         blocked, reason = await db_task(_is_blocked, uid, cid)
         if blocked:
-            return await m.answer(reason)
+            return await reply_auto(m, reason)
 
         tranqed, t_left = await db_task(_is_tranquilized, uid, cid)
         if tranqed:
-            return await m.answer(f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
+            return await reply_auto(m, f"💉 Вы под транквилизатором! Осталось: {format_time(t_left)}")
 
         parts = m.text.split() if m.text else []
         # Формат: /give <N> <coin|black> — цель через reply или @тег
@@ -3555,22 +3519,22 @@ async def cmd_give(m: types.Message):
                 currency = p.lower()
 
         if amount is None or currency is None:
-            return await m.answer(
+            return await reply_auto(m, 
                 "⚠️ Использование: /give <сумма> <coin|black> (ответом или @тег)\n"
                 "Пример: /give 10 coin  или  /give 2 black"
             )
         if amount <= 0:
-            return await m.answer("❌ Сумма должна быть больше 0!")
+            return await reply_auto(m, "❌ Сумма должна быть больше 0!")
 
         is_black = currency in ("black", "blacks")
 
         tid, tfull = await resolve_target(m, cid)
         if not tid:
-            return await m.answer("⚠️ Укажите цель: ответом на сообщение или @тег!")
+            return await reply_auto(m, "⚠️ Укажите цель: ответом на сообщение или @тег!")
         if tid == uid:
-            return await m.answer("🤡 Нельзя передавать монеты самому себе!")
+            return await reply_auto(m, "🤡 Нельзя передавать монеты самому себе!")
         if tid == bot.id:
-            return await m.answer("🤖 Боту монеты не нужны!")
+            return await reply_auto(m, "🤖 Боту монеты не нужны!")
 
         tname = clean_nick(tfull)
         await db_task(_get_user, tid, cid, tname)
@@ -3583,31 +3547,31 @@ async def cmd_give(m: types.Message):
 
         if is_black:
             if u["black_money"] < amount:
-                return await m.answer(
+                return await reply_auto(m, 
                     f"🖤 Недостаточно! У вас: {u['black_money']}🖤, нужно: {amount}🖤"
                 )
             await async_upd(uid, cid, {"black_money": u["black_money"] - amount})
             await async_upd(tid, cid, {"black_money": t["black_money"] + amount})
-            await m.answer(
+            await reply_auto(m, 
                 f"🖤 {sender_name} передал {amount}🖤 → {target_name}!\n"
                 f"{sender_name}: {u['black_money'] - amount}🖤 | "
                 f"{target_name}: {t['black_money'] + amount}🖤"
             )
         else:
             if u["money"] < amount:
-                return await m.answer(
+                return await reply_auto(m, 
                     f"💰 Недостаточно! У вас: {u['money']}💰, нужно: {amount}💰"
                 )
             await async_upd(uid, cid, {"money": u["money"] - amount})
             await async_upd(tid, cid, {"money": t["money"] + amount})
-            await m.answer(
+            await reply_auto(m, 
                 f"💰 {sender_name} передал {amount}💰 → {target_name}!\n"
                 f"{sender_name}: {u['money'] - amount}💰 | "
                 f"{target_name}: {t['money'] + amount}💰"
             )
     except Exception as e:
         logger.error(f"/give error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка передачи монет")
+        await reply_auto(m, "⚠️ Ошибка передачи монет")
 
 # ─── /911 ─────────────────────────────────────────────────────────────────────
 
@@ -3625,17 +3589,17 @@ async def cmd_911(m: types.Message):
 
         rec = await db_task(_get_kidnapped_by_victim, uid, cid)
         if not rec or rec.get("sold") != 1:
-            return await m.answer("🚔 /911 можно вызвать только находясь в рабстве!")
+            return await reply_auto(m, "🚔 /911 можно вызвать только находясь в рабстве!")
 
         # Наручники — нельзя использовать /911
         if rec.get("handcuffed", 0):
-            return await m.answer("⛓️ В наручниках нельзя вызвать копов! Сначала сними наручники (/freed).")
+            return await reply_auto(m, "⛓️ В наручниках нельзя вызвать копов! Сначала сними наручники (/freed).")
 
         now = time.time()
         last = u.get("last_911", 0)
         cd = 18000 - (now - last)
         if cd > 0:
-            return await m.answer(f"🚔 /911 доступен через {format_time(cd)}")
+            return await reply_auto(m, f"🚔 /911 доступен через {format_time(cd)}")
 
         # Проверяем глушилку у клиента
         client_id = rec.get("slave_owner_id", 0)
@@ -3681,7 +3645,7 @@ async def cmd_911(m: types.Message):
         jammer_note = "\n📡 Клиент использует глушилку — нужно пройти 10 сапёров!" if jammer_active else ""
 
         kb = _sapper_keyboard(session)
-        sent = await m.answer(
+        sent = await reply_auto(m, 
             f"🚔 {display} вызывает копов!\n\n"
             f"Реши {rounds_needed} сапёра(ов) подряд чтобы освободиться!\n"
             f"❌ Если проиграешь хоть один — вызов провалится.\n"
@@ -3693,7 +3657,7 @@ async def cmd_911(m: types.Message):
         sapper_sessions[uid]["msg_id"] = sent.message_id
     except Exception as e:
         logger.error(f"/911 error: {e}", exc_info=True)
-        await m.answer("⚠️ Ошибка")
+        await reply_auto(m, "⚠️ Ошибка")
 
 
 @dp.callback_query(lambda c: c.data.startswith("sap:"))
@@ -3818,7 +3782,7 @@ async def sapper_cb(call: types.CallbackQuery):
                     pass
 
                 try:
-                    await bot.send_message(
+                    await send_permanent(
                         cid,
                         f"🚔 АРЕСТ!\n"
                         f"{display} вызвал копов и сбежал из рабства!\n"
