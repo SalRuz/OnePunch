@@ -5,7 +5,6 @@ redis==5.0.1
 aioredis==2.0.1
 python-dotenv==1.0.0
 cryptography==41.0.7
-hashlib2==1.0.0
 Pillow==10.1.0
 APScheduler==3.10.4
 sentry-sdk==1.39.1
