@@ -36,7 +36,7 @@ from dotenv import load_dotenv
 # ============================================================
 
 # Telegram Bot Token
-BOT_TOKEN=8183582932:AAEIas0VlMxWSDvOLap_y6cTsZ9yqicmhYc
+BOT_TOKEN = 8183582932:AAEIas0VlMxWSDvOLap_y6cTsZ9yqicmhYc
 
 # Администраторы (через запятую)
 ADMIN_IDS=1170970828
