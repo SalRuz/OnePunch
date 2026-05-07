@@ -35,37 +35,38 @@ from dotenv import load_dotenv
 # КОНФИГУРАЦИЯ
 # ============================================================
 
-load_dotenv()
+# Telegram Bot Token
+BOT_TOKEN=8183582932:AAEIas0VlMxWSDvOLap_y6cTsZ9yqicmhYc
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "123456789").split(",") if x.strip()]
-CURRENCY_NAME = os.getenv("CURRENCY_NAME", "🪙 Коин")
-CURRENCY_SYMBOL = os.getenv("CURRENCY_SYMBOL", "🪙")
+# Администраторы (через запятую)
+ADMIN_IDS=1170970828
 
-# Экономические константы
-DAILY_BONUS = int(os.getenv("DAILY_BONUS", "100"))
-REFERRAL_BONUS = int(os.getenv("REFERRAL_BONUS", "50"))
-QUIZ_BASE_REWARD = int(os.getenv("QUIZ_BASE_REWARD", "10"))
-MIN_BET = int(os.getenv("MIN_BET", "10"))
-MAX_BET = int(os.getenv("MAX_BET", "10000"))
-DAILY_WIN_LIMIT = int(os.getenv("DAILY_WIN_LIMIT", "50000"))
-DAILY_LOSS_LIMIT = int(os.getenv("DAILY_LOSS_LIMIT", "20000"))
-CARD_RAKE = float(os.getenv("CARD_RAKE", "0.04"))  # 4%
-STARTING_BALANCE = int(os.getenv("STARTING_BALANCE", "500"))
+# Валюта
+CURRENCY_NAME=Коин
+CURRENCY_SYMBOL=🪙
+
+# Экономика
+STARTING_BALANCE=500
+DAILY_BONUS=100
+REFERRAL_BONUS=50
+QUIZ_BASE_REWARD=10
+MIN_BET=10
+MAX_BET=10000
+DAILY_WIN_LIMIT=50000
+DAILY_LOSS_LIMIT=20000
+CARD_RAKE=0.04
 
 # Кулдауны (секунды)
-MINIGAME_COOLDOWN = int(os.getenv("MINIGAME_COOLDOWN", "300"))  # 5 мин
-QUIZ_COOLDOWN = int(os.getenv("QUIZ_COOLDOWN", "60"))
-DAILY_BONUS_COOLDOWN = 86400  # 24 часа
-CARD_TURN_TIMEOUT = int(os.getenv("CARD_TURN_TIMEOUT", "45"))
+MINIGAME_COOLDOWN=300
+QUIZ_COOLDOWN=60
+CARD_TURN_TIMEOUT=45
 
-# RTP казино
-SLOTS_RTP = float(os.getenv("SLOTS_RTP", "0.90"))
-ROULETTE_RTP = float(os.getenv("ROULETTE_RTP", "0.973"))
-BLACKJACK_RTP = float(os.getenv("BLACKJACK_RTP", "0.995"))
-CRASH_RTP = float(os.getenv("CRASH_RTP", "0.95"))
-DICE_RTP = float(os.getenv("DICE_RTP", "0.98"))
-
+# RTP казино (0.85 - 0.99)
+SLOTS_RTP=0.90
+ROULETTE_RTP=0.973
+BLACKJACK_RTP=0.995
+CRASH_RTP=0.95
+DICE_RTP=0.98
 # Пути
 DATA_DIR = Path("/app/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
