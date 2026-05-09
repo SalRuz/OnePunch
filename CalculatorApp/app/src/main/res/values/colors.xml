@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Основные цвета -->
+    <color name="bg_main">#1A1A2E</color>
+    <color name="bg_display">#16213E</color>
+    <color name="bg_buttons">#1A1A2E</color>
+
+    <!-- Кнопки цифр -->
+    <color name="btn_number">#2D2D44</color>
+    <color name="btn_number_pressed">#3D3D5C</color>
+    <color name="btn_number_text">#FFFFFF</color>
+
+    <!-- Кнопки операторов -->
+    <color name="btn_operator">#E94560</color>
+    <color name="btn_operator_pressed">#FF6B6B</color>
+    <color name="btn_operator_text">#FFFFFF</color>
+
+    <!-- Кнопка equals -->
+    <color name="btn_equals">#0F3460</color>
+    <color name="btn_equals_pressed">#1A5C9A</color>
+    <color name="btn_equals_text">#FFFFFF</color>
+
+    <!-- Кнопка clear -->
+    <color name="btn_clear">#533483</color>
+    <color name="btn_clear_pressed">#7B4FBF</color>
+    <color name="btn_clear_text">#FFFFFF</color>
+
+    <!-- Текст дисплея -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#8899AA</color>
+
+    <!-- Прочее -->
+    <color name="operator_highlight">#2D1B3D</color>
+    <color name="shadow_color">#55000000</color>
+</resources>
