@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Calculator" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/btn_operator</item>
+        <item name="colorPrimaryVariant">@color/btn_operator_pressed</item>
+        <item name="colorOnPrimary">@color/text_primary</item>
+        <item name="android:windowBackground">@color/bg_main</item>
+        <item name="android:statusBarColor">@color/bg_display</item>
+        <item name="android:navigationBarColor">@color/bg_main</item>
+    </style>
+
+    <!-- Стиль кнопок цифр -->
+    <style name="ButtonNumber">
+        <item name="android:textSize">28sp</item>
+        <item name="android:textColor">@color/btn_number_text</item>
+        <item name="android:fontFamily">sans-serif-light</item>
+        <item name="android:background">@drawable/button_number</item>
+        <item name="android:elevation">8dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <!-- Стиль кнопок операторов -->
+    <style name="ButtonOperator">
+        <item name="android:textSize">30sp</item>
+        <item name="android:textColor">@color/btn_operator_text</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:background">@drawable/button_operator</item>
+        <item name="android:elevation">8dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <!-- Стиль кнопки равно -->
+    <style name="ButtonEquals">
+        <item name="android:textSize">32sp</item>
+        <item name="android:textColor">@color/btn_equals_text</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:background">@drawable/button_equals</item>
+        <item name="android:elevation">10dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <!-- Стиль кнопки очистки -->
+    <style name="ButtonClear">
+        <item name="android:textSize">24sp</item>
+        <item name="android:textColor">@color/btn_clear_text</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:background">@drawable/button_clear</item>
+        <item name="android:elevation">8dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+</resources>
